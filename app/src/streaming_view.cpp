@@ -261,6 +261,12 @@ void StreamingView::onFocusGained() {
     setBottomBarStatus("1");
 
     scrollTouchRecognizer->forceReset();
+
+    // End the stream when the console suspends, the way Moonlight on Android
+    // does. See the comment on onWindowFocusChanged in the header.
+    windowFocusSubscription =
+        Application::getWindowFocusChangedEvent()->subscribe(
+            [this](bool focused) { this->onWindowFocusChanged(focused); });
 }
 
 void StreamingView::onFocusLost() {
@@ -419,6 +425,23 @@ void StreamingView::removeKeyboard() {
     keyboard->removeFromSuperView();
     keyboard = nullptr;
     Application::giveFocus(this);
+}
+
+void StreamingView::onWindowFocusChanged(bool focused) {
+    if (focused || terminated)
+        return;
+
+    // Losing focus on Switch means the console is going to sleep or the HOME
+    // menu has taken over. Moonlight on Android ends the session at the
+    // equivalent point (Game.onStop calls stopConnection then finish), and
+    // this matches it: stop the stream and fall back to the host list rather
+    // than carrying decoder and GPU state across a suspend.
+    //
+    // terminateApp is false, so only the stream ends. Whatever is running on
+    // the host keeps running and can be resumed by reconnecting.
+    Logger::info("StreamingView: focus lost, ending the stream");
+    MoonlightInputManager::instance().dropInput();
+    terminate(false);
 }
 
 void StreamingView::terminate(bool terminateApp) {
@@ -594,6 +617,8 @@ StreamingView::~StreamingView() {
         ->getInputManager()
         ->getKeyboardKeyStateChanged()
         ->unsubscribe(keysSubscription);
+    Application::getWindowFocusChangedEvent()->unsubscribe(
+        windowFocusSubscription);
     session->stop(false);
     delete session;
 }
