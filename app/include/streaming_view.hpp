@@ -53,6 +53,25 @@ class StreamingView : public brls::Box {
 
     brls::Event<bool>::Subscription windowFocusSubscription;
 
+    /**
+     * Set by onWindowFocusChanged, acted on in draw().
+     *
+     * The focus callback runs inside Event<bool>::fire, which iterates its
+     * callback list by value:
+     *
+     *     for (Callback cb : this->callbacks)
+     *         cb(args...);
+     *
+     * terminate() calls dismiss(), which pops this view and runs its
+     * destructor, and the destructor unsubscribes. Doing that from inside the
+     * callback mutates the list fire() is walking, and the iteration then
+     * runs off a destroyed object.
+     *
+     * So the callback only records the intent and draw() performs it, where
+     * the view is known to be alive and nothing is iterating the event.
+     */
+    bool pendingSuspendTerminate = false;
+
   public:
 
     bool draw_stats = false;
