@@ -800,13 +800,13 @@ void patchNpdm(std::vector<u8>& npdm_data, const NpdmPatch& patch) {
 
 void patchNacp(NacpStruct& nacp, const NacpPatch& patch) {
     if (!patch.name.empty()) {
-        for (auto& lang : nacp.lang) {
+        for (auto& lang : nacp.lang_data.lang) {
             std::strncpy(lang.name, patch.name.c_str(), sizeof(lang.name) - 1);
         }
     }
 
     if (!patch.author.empty()) {
-        for (auto& lang : nacp.lang) {
+        for (auto& lang : nacp.lang_data.lang) {
             std::strncpy(lang.author, patch.author.c_str(), sizeof(lang.author) - 1);
         }
     }

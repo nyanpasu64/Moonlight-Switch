@@ -125,6 +125,8 @@ int main(int argc, char* argv[]) {
 
     registerDeepLinkHandler();
 
+    nxlinkStdio();
+
 #if defined(PLATFORM_VISIONOS)
     brls::Application::setMaximumUIScale(1.0f);
 #endif
@@ -190,6 +192,6 @@ int main(int argc, char* argv[]) {
 #if defined(PLATFORM_TVOS)
     exit(0);
 #endif
-    
+
     return EXIT_SUCCESS;
 }
