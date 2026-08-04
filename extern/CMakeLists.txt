@@ -10,6 +10,7 @@ endif ()
 
 option(TRACY_ENABLE "" ON)
 option(TRACY_NO_FRAME_IMAGE "" ON)
+option(TRACY_DELAYED_INIT "" ON)
 add_subdirectory(tracy)  # target: TracyClient or alias Tracy::TracyClient
 
 add_subdirectory(moonlight-common-c)
