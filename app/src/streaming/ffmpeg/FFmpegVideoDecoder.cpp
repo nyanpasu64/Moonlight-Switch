@@ -6,6 +6,7 @@
 #include "MoonlightSession.hpp"
 
 #include <cstring>
+#include <tracy/Tracy.hpp>
 
 #if defined(_WIN32)
 #if defined(__SDL3__)
@@ -134,6 +135,7 @@ int FFmpegVideoDecoder::configure_decoder_context(bool enable_hw_decode,
 }
 
 int FFmpegVideoDecoder::open_decoder() {
+    ZoneScoped;
     auto log_decoder_attempt = [&]() {
         brls::Logger::info(
             "FFmpeg: Decoder threading mode: hw={} threads={} low_delay={} thread_type={} slice_support={} decoder={}",
@@ -250,6 +252,7 @@ int FFmpegVideoDecoder::open_decoder() {
 }
 
 int FFmpegVideoDecoder::finalize_decoder_setup() {
+    ZoneScoped;
     if (m_decoder_finalized) {
         return 0;
     }
@@ -380,6 +383,7 @@ int FFmpegVideoDecoder::prepare_android_h264_extradata(PDECODE_UNIT decode_unit)
 
 int FFmpegVideoDecoder::setup(int video_format, int width, int height,
                               int redraw_rate, void* context, int dr_flags) {
+    ZoneScoped;
     m_stream_fps = redraw_rate;
 #if defined(PLATFORM_ANDROID)
     ffmpeg::decoder::cleanupAndroidMediaCodecState(m_android_mediacodec);
@@ -622,6 +626,7 @@ int FFmpegVideoDecoder::setup(int video_format, int width, int height,
 }
 
 void FFmpegVideoDecoder::cleanup() {
+    ZoneScoped;
     brls::Logger::info("FFmpeg: Cleanup...");
 
     m_decoder_ready = false;
@@ -680,6 +685,7 @@ void FFmpegVideoDecoder::cleanup() {
 }
 
 int FFmpegVideoDecoder::submit_decode_unit(PDECODE_UNIT decode_unit) {
+    ZoneScoped;
     if (decode_unit->fullLength < DECODER_BUFFER_SIZE) {
         PLENTRY entry = decode_unit->bufferList;
 
@@ -894,6 +900,7 @@ int FFmpegVideoDecoder::decode(char* indata, int inlen) {
 }
 
 int FFmpegVideoDecoder::drain_frames() {
+    ZoneScoped;
     int decoded_frames = 0;
 
     while (true) {
@@ -922,6 +929,7 @@ int FFmpegVideoDecoder::drain_frames() {
 }
 
 int FFmpegVideoDecoder::get_frame(bool native_frame, AVFrame** frame) {
+    ZoneScoped;
     int err;
     *frame = nullptr;
     AVFrame* resultFrame = nullptr;

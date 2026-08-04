@@ -37,6 +37,8 @@ unsigned int sceLibcHeapSize             = 24 * 1024 * 1024;
 #include "MoonlightSession.hpp"
 #include "SwitchMoonlightSessionDecoderAndRenderProvider.hpp"
 
+#include <tracy/Tracy.hpp>
+
 
 #if defined(_WIN32) && defined(__SDL2__)
 #include <SDL.h>
@@ -126,6 +128,9 @@ int main(int argc, char* argv[]) {
     registerDeepLinkHandler();
 
     nxlinkStdio();
+    brls::Logger::getLogEvent()->subscribe([](Logger::TimePoint now, LogLevel level, const std::string& log) {
+        TracyMessage(log.c_str(), log.size());
+    });
 
 #if defined(PLATFORM_VISIONOS)
     brls::Application::setMaximumUIScale(1.0f);

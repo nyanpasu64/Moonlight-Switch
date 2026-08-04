@@ -197,6 +197,7 @@ void MoonlightSession::video_decoder_stop() {
 }
 
 void MoonlightSession::video_decoder_cleanup() {
+    ZoneScoped;
     if (m_active_session && m_active_session->m_video_decoder) {
         m_active_session->m_video_decoder->cleanup();
     }
@@ -204,6 +205,7 @@ void MoonlightSession::video_decoder_cleanup() {
 
 int MoonlightSession::video_decoder_submit_decode_unit(
     PDECODE_UNIT decode_unit) {
+    ZoneScoped;
     if (m_active_session && m_active_session->m_video_decoder) {
         return m_active_session->m_video_decoder->submit_decode_unit(
             decode_unit);

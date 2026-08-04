@@ -266,8 +266,10 @@ elseif (USE_GL_RENDERER)
     list(APPEND MAIN_SRC app/src/streaming/video/OpenGL/GLVideoRenderer.cpp)
 endif ()
 
+list(APPEND MAIN_SRC extern/tracy/public/TracyClient.cpp)
+
 # building target
-program_target(${PROJECT_NAME} "${MAIN_SRC}" extern/tracy/public/TracyClient.cpp)
+program_target(${PROJECT_NAME} "${MAIN_SRC}")
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 20)
 if (USE_SDL3)
     target_compile_definitions(${PROJECT_NAME} PRIVATE SDL_ENABLE_OLD_NAMES)
