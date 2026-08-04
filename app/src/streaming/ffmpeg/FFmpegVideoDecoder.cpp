@@ -841,7 +841,7 @@ int FFmpegVideoDecoder::submit_decode_unit(PDECODE_UNIT decode_unit) {
         }
         else {
             if (MoonlightSession::activeSession() != nullptr)
-                MoonlightSession::activeSession()->restart();
+                MoonlightSession::activeSession()->stop(0);
         }
     } else {
         brls::Logger::error("FFmpeg: Big buffer to decode... 2");

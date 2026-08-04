@@ -101,25 +101,25 @@ void MoonlightSession::connection_terminated(int error_code) {
         return;
     }
 
-    if (error_code != 0) {
-        brls::Logger::info("MoonlightSession: Reconnection attempt");
+    // if (error_code != 0) {
+    //     brls::Logger::info("MoonlightSession: Reconnection attempt");
 
-        // Connection is already terminated here; avoid toggling the user stop flag.
-        LiStopConnection();
+    //     // Connection is already terminated here; avoid toggling the user stop flag.
+    //     LiStopConnection();
 
-        m_active_session->start([](const GSResult<bool>& result) {
-            if (result.isSuccess()) {
-                brls::Logger::info("MoonlightSession: Reconnected");
-            } else {
-                brls::Logger::info("MoonlightSession: Reconnection failed");
-                if (m_active_session) {
-                    m_active_session->m_is_active = false;
-                    m_active_session->m_is_terminated = true;
-                }
-            }
-        }, m_active_session->m_is_sunshine);
-        return;
-    }
+    //     m_active_session->start([](const GSResult<bool>& result) {
+    //         if (result.isSuccess()) {
+    //             brls::Logger::info("MoonlightSession: Reconnected");
+    //         } else {
+    //             brls::Logger::info("MoonlightSession: Reconnection failed");
+    //             if (m_active_session) {
+    //                 m_active_session->m_is_active = false;
+    //                 m_active_session->m_is_terminated = true;
+    //             }
+    //         }
+    //     }, m_active_session->m_is_sunshine);
+    //     return;
+    // }
 
     m_active_session->m_is_active = false;
     m_active_session->m_is_terminated = true;
