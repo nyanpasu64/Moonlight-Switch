@@ -266,8 +266,18 @@ elseif (USE_GL_RENDERER)
     list(APPEND MAIN_SRC app/src/streaming/video/OpenGL/GLVideoRenderer.cpp)
 endif ()
 
+# add_subdirectory(extern/tracy)  # target: TracyClient or alias Tracy::TracyClient
+add_library(TracyClient INTERFACE)
+# for some reason __SWITCH__ is only defined on executables and not libraries, and the tracy fork depends on it. just stuff its source into ${PROJECT_NAME}.
+# cmake/Platform/NintendoSwitch.cmake
+# 15:set(NX_COMMON_FLAGS  "-ffunction-sections -fdata-sections -D__SWITCH__")
+# 25:             set(CMAKE_${lang}_FLAGS_INIT "${${platform}_ARCH_SETTINGS} ${${platform}_COMMON_FLAGS}")
+
+target_include_directories(TracyClient SYSTEM INTERFACE extern/tracy/public)
+target_compile_definitions(TracyClient INTERFACE TRACY_ENABLE=1)
+
 # building target
-program_target(${PROJECT_NAME} "${MAIN_SRC}")
+program_target(${PROJECT_NAME} "${MAIN_SRC}" extern/tracy/public/TracyClient.cpp)
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 20)
 if (USE_SDL3)
     target_compile_definitions(${PROJECT_NAME} PRIVATE SDL_ENABLE_OLD_NAMES)
@@ -399,7 +409,7 @@ elseif (PLATFORM_SWITCH)
     list(APPEND APP_PLATFORM_LIB dav1d z)
 elseif (PLATFORM_ANDROID)
     list(APPEND APP_PLATFORM_LIB android)
-    target_link_libraries(${PROJECT_NAME} PRIVATE 
+    target_link_libraries(${PROJECT_NAME} PRIVATE
     # ${CMAKE_CURRENT_SOURCE_DIR}/extern/borealis/library/lib/extern/angle/android/arm64-v8a/libEGL_angle.so
     # ${CMAKE_CURRENT_SOURCE_DIR}/extern/borealis/library/lib/extern/angle/android/arm64-v8a/libGLESv2_angle.so
     )
@@ -412,7 +422,7 @@ elseif (PLATFORM_IOS)
             "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_ALTER}"
             "${VERSION_BUILD}")
 
-    set_target_properties(${PROJECT_NAME} PROPERTIES 
+    set_target_properties(${PROJECT_NAME} PROPERTIES
         INSTALL_RPATH @executable_path/Frameworks
         XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY ON
         MACOSX_BUNDLE_COPYRIGHT "Copyright 2026 ${PROJECT_AUTHOR}"
@@ -460,7 +470,7 @@ elseif (PLATFORM_TVOS)
             ${PROJECT_NAME}
             "${VERSION_MAJOR}.${VERSION_MINOR}.${VERSION_ALTER}"
             "${VERSION_BUILD}")
-    set_target_properties(${PROJECT_NAME} PROPERTIES 
+    set_target_properties(${PROJECT_NAME} PROPERTIES
         INSTALL_RPATH @executable_path/Frameworks
         XCODE_EMBED_FRAMEWORKS_CODE_SIGN_ON_COPY ON
         MACOSX_BUNDLE_COPYRIGHT "Copyright 2026 ${PROJECT_AUTHOR}"
@@ -665,6 +675,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
         ${MOONLIGHT_APP_FFMPEG_LIBS}
         ${MOONLIGHT_APP_SDL_LIBS}
         ${APP_PLATFORM_LIB})
+target_link_libraries(Moonlight PUBLIC TracyClient)
 
 if (MULTICAST_DISABLED)
     add_definitions(-DMULTICAST_DISABLED)
