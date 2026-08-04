@@ -93,6 +93,7 @@ void preferSwitchCore(int ordinal) {
 #endif
 
 int main(int argc, char* argv[]) {
+    tracy::StartupProfiler();
     // Enable recording for Twitter memes
 #ifdef __SWITCH__
     appletInitializeGamePlayRecording();
@@ -192,6 +193,8 @@ int main(int argc, char* argv[]) {
         }
 #endif
     }
+
+    tracy::ShutdownProfiler();
 
     // Exit
 #if defined(PLATFORM_TVOS)
