@@ -25,19 +25,9 @@ extern "C" {
 // Requests low latency decode behavior
 #define LOW_LATENCY_DECODE 0x2
 
-//#if defined(PLATFORM_TVOS)
-//#define DECODER_BUFFER_SIZE 92 * 1024 * 4
-//#else
-//#define DECODER_BUFFER_SIZE 92 * 1024 * 2
-//#endif
 #define DECODER_BUFFER_SIZE (1024 * 1024)
 
 FFmpegVideoDecoder::FFmpegVideoDecoder() {
-//    AVBufferRef* deviceRef = av_hwdevice_ctx_alloc(AV_HWDEVICE_TYPE_MEDIACODEC);
-//    AVHWDeviceContext* ctx = (AVHWDeviceContext*)deviceRef->data;
-//    AVMediaCodecDeviceContext* hwctx = (AVMediaCodecDeviceContext*)ctx->hwctx;
-////    hwctx->surface = ;
-//    av_hwdevice_ctx_init(deviceRef);
 }
 
 FFmpegVideoDecoder::~FFmpegVideoDecoder() = default;
@@ -840,6 +830,7 @@ int FFmpegVideoDecoder::submit_decode_unit(PDECODE_UNIT decode_unit) {
 
         }
         else {
+            brls::Logger::error("corrupted packet of length {}", length);
             if (MoonlightSession::activeSession() != nullptr)
                 MoonlightSession::activeSession()->stop(0);
         }
