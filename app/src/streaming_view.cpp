@@ -49,7 +49,7 @@ void overrideButtonsIfNeeded(bool value) {
         case ButtonOverrideType::NONE: break;
         case ButtonOverrideType::HOME:
             ((SwitchInputManager*) brls::Application::getPlatform()->getInputManager())->setHomeButtonOverrideMode(ButtonOverrideMode::CUSTOM_EVENT);
-            break;  
+            break;
         case ButtonOverrideType::SCREENSHOT:
             ((SwitchInputManager*) brls::Application::getPlatform()->getInputManager())->setScreenshotButtonOverrideMode(ButtonOverrideMode::CUSTOM_EVENT);
             break;
@@ -59,7 +59,7 @@ void overrideButtonsIfNeeded(bool value) {
         case ButtonOverrideType::NONE: break;
         case ButtonOverrideType::HOME:
             ((SwitchInputManager*) brls::Application::getPlatform()->getInputManager())->setHomeButtonOverrideMode(ButtonOverrideMode::GUIDE_BUTTON);
-            break;  
+            break;
         case ButtonOverrideType::SCREENSHOT:
             ((SwitchInputManager*) brls::Application::getPlatform()->getInputManager())->setScreenshotButtonOverrideMode(ButtonOverrideMode::GUIDE_BUTTON);
             break;
@@ -236,6 +236,12 @@ StreamingView::StreamingView(const Host& host, const AppInfo& app) : host(host),
                     }
                 }
             });
+
+    // End the stream when the console suspends, the way Moonlight on Android
+    // does. See the comment on onWindowFocusChanged in the header.
+    windowFocusSubscription =
+        Application::getWindowFocusChangedEvent()->subscribe(
+            [this](bool focused) { this->onWindowFocusChanged(focused); });
 }
 
 void StreamingView::onFocusGained() {
@@ -261,12 +267,6 @@ void StreamingView::onFocusGained() {
     setBottomBarStatus("1");
 
     scrollTouchRecognizer->forceReset();
-
-    // End the stream when the console suspends, the way Moonlight on Android
-    // does. See the comment on onWindowFocusChanged in the header.
-    windowFocusSubscription =
-        Application::getWindowFocusChangedEvent()->subscribe(
-            [this](bool focused) { this->onWindowFocusChanged(focused); });
 }
 
 void StreamingView::onFocusLost() {
@@ -624,7 +624,7 @@ StreamingView::~StreamingView() {
 #ifdef PLATFORM_TVOS
     updatePreferredDisplayMode(false);
 #endif
-    
+
     Application::getPlatform()->disableScreenDimming(false);
     Application::getPlatform()
         ->getInputManager()
