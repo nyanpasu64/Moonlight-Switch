@@ -5,6 +5,7 @@
 #include "Settings.hpp"
 #include "borealis.hpp"
 #include <string.h>
+#include <tracy/Tracy.hpp>
 
 #if defined(PLATFORM_IOS) || defined(PLATFORM_VISIONOS)
 extern void getWindowSize(int* w, int* h);
@@ -27,6 +28,8 @@ void MoonlightSession::set_provider(
 }
 
 MoonlightSession::MoonlightSession(const std::string& address, int app_id) {
+    ZoneScoped;
+    ZoneTextF("{ this = %p", this);
     m_address = address;
     m_app_id = app_id;
     m_active_session = this;
@@ -37,6 +40,8 @@ MoonlightSession::MoonlightSession(const std::string& address, int app_id) {
 }
 
 MoonlightSession::~MoonlightSession() {
+    ZoneScoped;
+    ZoneTextF("} this = %p", this);
     if (m_video_decoder) {
         delete m_video_decoder;
     }
@@ -80,6 +85,7 @@ void MoonlightSession::connection_stage_failed(int stage, int error_code) {
 }
 
 void MoonlightSession::connection_started() {
+    ZoneScoped;
     brls::Logger::info("MoonlightSession: Connection started");
     if (!m_active_session)
         return;
@@ -89,6 +95,7 @@ void MoonlightSession::connection_started() {
 }
 
 void MoonlightSession::connection_terminated(int error_code) {
+    ZoneScoped;
     brls::Logger::info("MoonlightSession: Connection terminated with code: {}", error_code);
 
     if (!m_active_session)
@@ -245,6 +252,7 @@ void MoonlightSession::audio_renderer_decode_and_play_sample(
 // MARK: MoonlightSession
 
 void MoonlightSession::start(ServerCallback<bool> callback, bool is_sunshine) {
+    ZoneScoped;
     m_is_sunshine = is_sunshine;
     m_stop_requested = false;
     m_is_terminated = false;
@@ -370,6 +378,7 @@ void MoonlightSession::start(ServerCallback<bool> callback, bool is_sunshine) {
 }
 
 void MoonlightSession::stop(int terminate_app) {
+    ZoneScoped;
     if (m_stop_requested)
         return;
 
@@ -383,6 +392,7 @@ void MoonlightSession::stop(int terminate_app) {
 }
 
 void MoonlightSession::restart() {
+    ZoneScoped;
     LiStopConnection();
 
     start([](const GSResult<bool>& result) {

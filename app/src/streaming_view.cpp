@@ -17,6 +17,7 @@
 #include "ingame_overlay_view.hpp"
 #include "streaming_input_overlay.hpp"
 #include "two_finger_scroll_recognizer.hpp"
+#include <tracy/Tracy.hpp>
 #include <Limelight.h>
 #include <chrono>
 #include <nanovg.h>
@@ -68,6 +69,7 @@ void overrideButtonsIfNeeded(bool value) {
 }
 
 StreamingView::StreamingView(const Host& host, const AppInfo& app) : host(host), app(app) {
+    ZoneScoped;
     Application::getPlatform()->disableScreenDimming(true);
 
     setFocusable(true);
@@ -90,6 +92,7 @@ StreamingView::StreamingView(const Host& host, const AppInfo& app) : host(host),
     GameStreamClient::instance().connect(
         host, [ASYNC_TOKEN](GSResult<SERVER_DATA> result) {
             ASYNC_RELEASE
+            ZoneScopedN("GameStreamClient::instance().connect()#cb");
             if (!result.isSuccess()) {
                 showError(result.error(), [this]() { terminate(false); });
                 return;
@@ -101,6 +104,7 @@ StreamingView::StreamingView(const Host& host, const AppInfo& app) : host(host),
             ASYNC_RETAIN
             session->start([ASYNC_TOKEN](GSResult<bool> result) {
                 ASYNC_RELEASE
+                ZoneScopedN("session->start()#cb");
 
                 loader->setHidden(true);
                 if (!result.isSuccess()) {
@@ -458,6 +462,7 @@ void StreamingView::onWindowFocusChanged(bool focused) {
 }
 
 void StreamingView::terminate(bool terminateApp) {
+    ZoneScoped;
     if (terminated)
         return;
     terminated = true;
@@ -621,6 +626,7 @@ void StreamingView::onLayout() {
 }
 
 StreamingView::~StreamingView() {
+    ZoneScoped;
 #ifdef PLATFORM_TVOS
     updatePreferredDisplayMode(false);
 #endif

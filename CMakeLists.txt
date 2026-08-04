@@ -266,16 +266,6 @@ elseif (USE_GL_RENDERER)
     list(APPEND MAIN_SRC app/src/streaming/video/OpenGL/GLVideoRenderer.cpp)
 endif ()
 
-# add_subdirectory(extern/tracy)  # target: TracyClient or alias Tracy::TracyClient
-add_library(TracyClient INTERFACE)
-# for some reason __SWITCH__ is only defined on executables and not libraries, and the tracy fork depends on it. just stuff its source into ${PROJECT_NAME}.
-# cmake/Platform/NintendoSwitch.cmake
-# 15:set(NX_COMMON_FLAGS  "-ffunction-sections -fdata-sections -D__SWITCH__")
-# 25:             set(CMAKE_${lang}_FLAGS_INIT "${${platform}_ARCH_SETTINGS} ${${platform}_COMMON_FLAGS}")
-
-target_include_directories(TracyClient SYSTEM INTERFACE extern/tracy/public)
-target_compile_definitions(TracyClient INTERFACE TRACY_ENABLE=1)
-
 # building target
 program_target(${PROJECT_NAME} "${MAIN_SRC}" extern/tracy/public/TracyClient.cpp)
 set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD 20)
