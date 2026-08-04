@@ -15,4 +15,5 @@
 	url = https://github.com/mjansson/mdns.git
 [submodule "extern/tracy"]
 	path = extern/tracy
-	url = https://github.com/cybervisi0n/tracy.git
+	url = https://github.com/nyanpasu64/tracy.git
+	branch = switch
