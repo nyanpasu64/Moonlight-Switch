@@ -137,11 +137,11 @@ class Settings : public Singleton<Settings> {
     [[nodiscard]] int bitrate() const { return m_bitrate; }
     void set_bitrate(int bitrate) { m_bitrate = bitrate; }
 
-    [[nodiscard]] bool request_hdr() const { 
+    [[nodiscard]] bool request_hdr() const {
 #ifdef SUPPORT_HDR
-        return m_enable_hdr; 
+        return m_enable_hdr;
 #else
-        return false; 
+        return false;
 #endif
     }
     void set_request_hdr(bool request_hdr) { m_enable_hdr = request_hdr; }
@@ -285,7 +285,7 @@ class Settings : public Singleton<Settings> {
 #if defined(__linux__) && defined(PLATFORM_DESKTOP)
         return m_use_hw_decoding;
 #else
-        return true;
+        return m_use_hw_decoding;
 #endif
     }
 

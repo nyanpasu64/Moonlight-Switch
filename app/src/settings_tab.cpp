@@ -343,7 +343,7 @@ SettingsTab::SettingsTab() {
 #if defined(__linux__) && defined(PLATFORM_DESKTOP)
     hwDecoding->setEnabled(true);
 #else
-    hwDecoding->setEnabled(false);
+    hwDecoding->setEnabled(true);
 #endif
 
 #if defined(__PSV__)
