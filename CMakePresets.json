@@ -28,6 +28,19 @@
       }
     },
     {
+      "name": "switch-release",
+      "binaryDir": "${sourceDir}/build/switch-release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "PLATFORM_SWITCH": "ON"
+      }
+    },
+    {
       "name": "windows-ucrt64-base",
       "hidden": true,
       "generator": "Ninja",
