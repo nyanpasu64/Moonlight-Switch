@@ -387,7 +387,7 @@ void MoonlightSession::scheduleRestart() {
     m_active_session->m_status = Status::TerminateAndRestart;
 }
 
-void MoonlightSession::mainThreadRestart() {
+void MoonlightSession::performRestart() {
     LiStopConnection();
 
     m_video_renderer->invalidateHardwareResources();
