@@ -23,12 +23,22 @@ class MoonlightSession {
     void stop(int terminate_app);
     void set_address(const std::string& address) { m_address = address; }
 
-    void restart();
+    void scheduleRestart();
+    void mainThreadRestart();
 
     void draw(NVGcontext* vg, int width, int height);
 
-    bool is_active() const { return m_is_active; }
-    bool is_terminated() const { return m_is_terminated; }
+    enum Status : unsigned char {
+        None,
+        Active,
+        Terminate,
+        TerminateAndRestart,
+        Restarting,
+        COUNT,
+    };
+
+    bool is_active() const { return m_status == Status::Active; }
+    Status status() const { return m_status; }
 
     bool connection_status_is_poor() const {
         return m_connection_status_is_poor;
@@ -81,8 +91,9 @@ class MoonlightSession {
     IVideoRenderer* m_video_renderer = nullptr;
     IAudioRenderer* m_audio_renderer = nullptr;
 
-    bool m_is_active = false;
-    bool m_is_terminated = false;
+    Status m_status = Status::None;
+
+    /// Is stop being requested by user input (not network error)?
     bool m_stop_requested = false;
     bool m_connection_status_is_poor = false;
     bool m_use_hdr = false;

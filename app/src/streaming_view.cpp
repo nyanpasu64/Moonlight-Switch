@@ -307,7 +307,10 @@ void StreamingView::draw(NVGcontext* vg, float x, float y, float width,
         return;
     }
 
-    if (!session || session->is_terminated()) {
+    MoonlightSession::Status status = session->status();
+    if (status == MoonlightSession::TerminateAndRestart) {
+        session->mainThreadRestart();
+    } else if (status == MoonlightSession::Terminate) {
         terminate(false);
         return;
     }
