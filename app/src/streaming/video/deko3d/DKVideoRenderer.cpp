@@ -1057,6 +1057,23 @@ void DKVideoRenderer::updateFrameMapping(AVFrame* frame) {
     queue.submitCommands(updateCmdMemRing.end(updateCmdbuf));
 }
 
+void DKVideoRenderer::invalidateHardwareResources() {
+    if (!m_is_initialized) {
+        return;
+    }
+
+    // frameMappings wraps buffers owned by the NVTEGRA decoder pool, keyed by
+    // the nvmap handle and CPU address they had when they were mapped. A
+    // console sleep tears those services down, so after a resume an entry can
+    // still match by handle while no longer describing the memory the GPU
+    // would sample. Drop every mapping and let updateFrameMapping() rebuild
+    // the one the next frame actually needs, exactly as it does when the
+    // frame size changes.
+    queue.waitIdle();
+    frameMappings.clear();
+    currentMappingIndex = -1;
+}
+
 void DKVideoRenderer::releaseImageSlots() {
     if (!vctx) {
         return;

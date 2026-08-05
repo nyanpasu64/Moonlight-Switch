@@ -390,6 +390,8 @@ void MoonlightSession::scheduleRestart() {
 void MoonlightSession::mainThreadRestart() {
     LiStopConnection();
 
+    m_video_renderer->invalidateHardwareResources();
+
     m_active_session->m_status = Status::Restarting;
     start([](const GSResult<bool>& result) {
         if (result.isSuccess()) {
