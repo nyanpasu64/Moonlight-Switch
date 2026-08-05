@@ -8,6 +8,7 @@
 #include <thread>
 #include <vector>
 
+#include <tracy/Tracy.hpp>
 #include <curl/curl.h>
 #include <libretro-common/retro_timers.h>
 #include <cstring>
@@ -741,6 +742,7 @@ void GameStreamClient::start(const std::string& address,
         address, "Firstly call connect() & pair()...", callback,
         [this, app_id](const std::string& cachedAddress,
                        ServerCallback<STREAM_CONFIGURATION>& callback) {
+            ZoneScopedN("GameStreamClient::start()#with_cached_server_data()#cb");
             int status = gs_start_app(&m_server_data[cachedAddress], &m_config,
                                       app_id, Settings::instance().sops(),
                                       Settings::instance().play_audio(), 0x1);

@@ -352,9 +352,11 @@ void MoonlightSession::start(ServerCallback<bool> callback, bool is_sunshine) {
 
     GameStreamClient::instance().start(
         m_address, m_config, m_app_id, [this, callback](auto result) {
+            ZoneScopedN("GameStreamClient::instance().start()#cb");
             if (result.isSuccess()) {
                 m_config = result.value();
                 brls::async([this, callback]() mutable {
+                    ZoneScopedN("GameStreamClient::instance().start()#cb2");
                     auto m_data =
                         GameStreamClient::instance().server_data(m_address);
 
