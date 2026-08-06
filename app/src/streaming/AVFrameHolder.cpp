@@ -449,7 +449,12 @@ void AVFrameQueue::recordArrivalLocked(
         adaptiveFrameInterval = std::chrono::nanoseconds(
             static_cast<int64_t>(1000000000.0 / estimatedSourceFps));
 
-        arrivalJitter = arrivalJitterSoFar / (arrivalWindowFrames - 1);
+        std::chrono::nanoseconds newJitter = arrivalJitterSoFar / (arrivalWindowFrames - 1);
+        if (arrivalJitter.count()) {
+            arrivalJitter += (newJitter - arrivalJitter) / 8;
+        } else {
+            arrivalJitter = newJitter;
+        }
     }
 
     arrivalWindowStart = now;
