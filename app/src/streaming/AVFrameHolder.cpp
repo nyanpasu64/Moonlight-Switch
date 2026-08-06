@@ -182,10 +182,11 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         dueFrames = queue.size() > targetBufferedFrames ? 1 : 0;
     } else if (arrival.rate->frameInterval > std::chrono::nanoseconds::zero() &&
                draw.averageInterval > std::chrono::nanoseconds::zero()) {
+        auto & rate = *arrival.rate;
         // input / output
         const double baseFramesPerDraw =
             static_cast<double>(draw.averageInterval.count()) /
-            static_cast<double>(arrival.rate->frameInterval.count());
+            static_cast<double>(rate.frameInterval.count());
 
         TracyPlot("baseFramesPerDraw", baseFramesPerDraw);
         TracyPlot("queue.size()", (int64_t)queue.size());
@@ -201,9 +202,20 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
 
             // We shouldn't skip frame 0 to a just-received frame 1, since the next
             // present may not have frame 2 ready, resulting in a duplicated frame.
-            const Timestamp safeArrivalTime = now - 2 * arrival.rate->jitter;
+            const Timestamp safeArrivalTime = now - (2 * rate.jitter + std::chrono::milliseconds(4));  // the nx runs at 16.7 ms/frame
             if (queue[dueFrames].timeEstimate > safeArrivalTime) {
                 break;
+            }
+        }
+        if (dueFrames == 0) {
+            // we intentionally leave frames buffered for at least
+            // (2 * rate.jitter + std::chrono::milliseconds(4)) past their expected
+            // (not actual) time, because they could be that much late and not constitute an error.
+            // we will give the same courtesy before declaring a frame missing.
+            const Timestamp frameExpectedBy = arrival.lastArrival + rate.frameInterval
+                + (2 * rate.jitter + std::chrono::milliseconds(4));
+            if (now > frameExpectedBy) {
+                dueFrames = 1;
             }
         }
     }
@@ -273,7 +285,7 @@ void AVFrameQueue::configure(size_t queueLimit, int configuredStreamFps,
     const size_t configuredDepth = std::max<size_t>(queueLimit, 1);
     limit = capacityFor(configuredDepth);
     targetBufferedFrames =
-        configuredDepth > 1 ? std::min<size_t>(configuredDepth - 1, 2) : 0;
+        configuredDepth > 1 ? std::min<size_t>(configuredDepth - 1, 1) : 0;
     transferOwnership = transferOwnershipEnabled;
     streamFps = configuredStreamFps;
     arrival = Arrival{};
@@ -399,8 +411,8 @@ bool AVFrameQueue::pushTransferredLocked(AVFrame* item) {
 }
 
 // https://en.wikipedia.org/wiki/Alpha_beta_filter
-// source: i made it up
-constexpr double ALPHA = 1. / 3.;
+// source: eyeballing "i want the time constant around 64 frames", https://alphaarchitect.com/trend-following-filters-part-2-2/#h-alpha-beta-gamma-position-tracking-filter-frequency-response-%CE%B1-0-3289-%CE%B2-0-0654-%CE%B3-0-0065
+constexpr double ALPHA = 1. / 8.;
 // https://www.oedigital.com/news/457127-applying-real-time-magnetic-declination-in-arctic-marine-seismic-acquisition
 constexpr double BETA = ALPHA * ALPHA / (2. - ALPHA);
 
