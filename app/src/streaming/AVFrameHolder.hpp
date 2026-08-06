@@ -7,6 +7,7 @@
 #include <mutex>
 #include <queue>
 #include <deque>
+#include <optional>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -67,20 +68,28 @@ private:
     size_t targetBufferedFrames = 0;
     int streamFps = 0;
 
+    /// fields only calculated once we receive enough frames, split out for lifetime
+    /// documentation
+    struct RateState {
+        /// alpha-beta filter for running fps
+        Duration frameInterval{0};
+
+        double estimatedSourceFps = 0.0;
+
+        // i *really* want it to be available from start, but calculating it depends on
+        // frameInterval. alas.
+        Duration jitter{};
+    };
+
     /// received frames
     struct Arrival {
         bool clockStarted = false;
-        bool rateComputed = false;
 
-        /// alpha-beta filter for running fps
         Timestamp lastArrival{};
-        Duration frameInterval{0};
-
         Timestamp windowStart{};
         size_t windowFrames = 0;  // TODO why not count periods rather than fenceposts?
-        double estimatedSourceFps = 0.0;
-        Duration jitterSoFar{};
-        Duration lastJitter{};
+
+        std::optional<RateState> rate;
     } arrival;
 
     /// sending frames to screen paints

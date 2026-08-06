@@ -172,20 +172,20 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         draw.frameCredit = 0.0;
         playoutResyncStat++;
         dueFrames = 1;
-    } else if (!arrival.rateComputed ||
-               arrival.frameInterval <= std::chrono::nanoseconds::zero() ||
+    } else if (!arrival.rate ||
+               arrival.rate->frameInterval <= std::chrono::nanoseconds::zero() ||
                draw.averageInterval <= std::chrono::nanoseconds::zero()) {
         brls::Logger::info("!arrival.rateComputed");
         // During the short measurement warm-up, consume only above the jitter
         // reserve. This follows arrivals without assuming configured FPS is
         // the FPS the host is actually producing.
         dueFrames = queue.size() > targetBufferedFrames ? 1 : 0;
-    } else if (arrival.frameInterval > std::chrono::nanoseconds::zero() &&
+    } else if (arrival.rate->frameInterval > std::chrono::nanoseconds::zero() &&
                draw.averageInterval > std::chrono::nanoseconds::zero()) {
         // input / output
         const double baseFramesPerDraw =
             static_cast<double>(draw.averageInterval.count()) /
-            static_cast<double>(arrival.frameInterval.count());
+            static_cast<double>(arrival.rate->frameInterval.count());
 
         TracyPlot("baseFramesPerDraw", baseFramesPerDraw);
         TracyPlot("queue.size()", (int64_t)queue.size());
@@ -201,7 +201,7 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
 
             // We shouldn't skip frame 0 to a just-received frame 1, since the next
             // present may not have frame 2 ready, resulting in a duplicated frame.
-            const Timestamp safeArrivalTime = now - 2 * arrival.lastJitter;
+            const Timestamp safeArrivalTime = now - 2 * arrival.rate->jitter;
             if (queue[dueFrames].timeEstimate > safeArrivalTime) {
                 break;
             }
@@ -347,12 +347,14 @@ size_t AVFrameQueue::getPlayoutResyncStat() const {
 
 double AVFrameQueue::getEstimatedSourceFps() const {
     std::lock_guard<std::mutex> lock(m_mutex);
-    return arrival.estimatedSourceFps;
+    if (!arrival.rate) return 0.;
+    return arrival.rate->estimatedSourceFps;
 }
 
 double AVFrameQueue::getJitterMs() const {
     std::lock_guard<std::mutex> lock(m_mutex);
-    auto jitterNs = arrival.lastJitter.count();
+    if (!arrival.rate) return 0.;
+    auto jitterNs = arrival.rate->jitter.count();
     return jitterNs / 1'000'000.;
 }
 
@@ -409,7 +411,10 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         arrival.windowStart = now;
         arrival.lastArrival = now;
         arrival.windowFrames = 1;
-        arrival.jitterSoFar = std::chrono::nanoseconds::zero();
+        // don't reset jitter?
+        // if (auto & rate = arrival.rate) {
+        //     rate->jitter = Duration::zero();
+        // }
         return now;
     };
 
@@ -424,15 +429,19 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         return initArrival();
     }
 
-    arrival.jitterSoFar += abs(now - arrival.lastArrival - arrival.frameInterval);
+    // Raise jitter to match spikes immediately, lower gradually.
+    if (auto & rate = arrival.rate) {
+        rate->jitter -= rate->jitter / 100;
+        rate->jitter = max(rate->jitter, abs(now - arrival.lastArrival - rate->frameInterval));
+    }
     arrival.windowFrames++;
 
     // Estimate smoothed time for frame pacing.
     Timestamp output;
-    if (arrival.rateComputed) {
+    if (auto & rate = arrival.rate) {
         // https://en.wikipedia.org/wiki/Alpha_beta_filter
         // (1)
-        const Timestamp timePredicted = arrival.lastArrival + arrival.frameInterval;
+        const Timestamp timePredicted = arrival.lastArrival + rate->frameInterval;
         TracyPlot("timePredicted", timePredicted.time_since_epoch().count() / 1'000'000.);
         // (3)
         const Duration residual = now - timePredicted;
@@ -440,7 +449,7 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         // (4)
         const Timestamp smoothedNow = timePredicted + duration_cast<Duration>(ALPHA * residual);
         // (5)
-        arrival.frameInterval += duration_cast<Duration>(BETA * residual);
+        rate->frameInterval += duration_cast<Duration>(BETA * residual);
 
         // The next iteration's step (1) takes *filter output*, not unfiltered now!
         arrival.lastArrival = smoothedNow;
@@ -458,8 +467,8 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
     TracyPlot("lastArrival", arrival.lastArrival.time_since_epoch().count() / 1'000'000.);
     TracyPlotConfig("lastArrival", tracy::PlotFormatType::Number, true, true, 0);
 
-    static const char * const RATE_COMPUTED = "rateComputed";
-    TracyPlot(RATE_COMPUTED, (long)arrival.rateComputed);
+    static const char * const RATE_COMPUTED = "rate";
+    TracyPlot(RATE_COMPUTED, (long)arrival.rate.has_value());
     TracyPlotConfig(RATE_COMPUTED, tracy::PlotFormatType::Number, true, true, 0);
 
     const Duration elapsed = now - arrival.windowStart;
@@ -478,21 +487,26 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         const double maximumFps =
             streamFps > 0 ? static_cast<double>(streamFps) : 240.0;
 
-        if (!arrival.rateComputed) {
-            arrival.rateComputed = true;
-            TracyPlot(RATE_COMPUTED, (long)arrival.rateComputed);
+        if (!arrival.rate) {
+            arrival.rate = RateState{};
+            auto & rate = *arrival.rate;
+            TracyPlot(RATE_COMPUTED, (long)arrival.rate.has_value());
 
             double sampleFps = static_cast<double>(arrival.windowFrames - 1) / elapsedSeconds;
             sampleFps = std::clamp(sampleFps, 1.0, maximumFps);
-            arrival.estimatedSourceFps = sampleFps;
+            rate.estimatedSourceFps = sampleFps;
 
             // Initialize arrival.frameInterval with estimated interval.
             // (no left/both taper, but it's good enough for an initial guess.)
-            arrival.frameInterval = std::chrono::nanoseconds(
-                static_cast<int64_t>(1000000000.0 / arrival.estimatedSourceFps));
-            brls::Logger::info("arrival.frameInterval := {}", arrival.frameInterval);
+            rate.frameInterval = std::chrono::nanoseconds(
+                static_cast<int64_t>(1000000000.0 / rate.estimatedSourceFps));
+            brls::Logger::info("arrival.frameInterval := {}", rate.frameInterval);
+
+            // rate.jitter is initialized to zero. unfortunately we can't easily extract
+            // jitter from past consumed frames.
         } else {
-            const double dSecPerFrame = arrival.frameInterval.count() / 1'000'000'000.;
+            auto & rate = *arrival.rate;
+            const double dSecPerFrame = rate.frameInterval.count() / 1'000'000'000.;
 
             // Used to be `static_cast<double>(arrival.windowFrames - 1) / elapsedSeconds`
             // but I feel like using the filtered frameInterval today.
@@ -502,25 +516,15 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
             // The quarter-second sample ignores short decoder bursts. The EMA
             // follows sustained FPS changes without making network jitter a
             // new presentation cadence every window.
-            arrival.estimatedSourceFps =
-                arrival.estimatedSourceFps * (1.0 - kArrivalRateSmoothing) +
+            rate.estimatedSourceFps =
+                rate.estimatedSourceFps * (1.0 - kArrivalRateSmoothing) +
                 sampleFps * kArrivalRateSmoothing;
-        }
-
-        Duration newJitter = arrival.jitterSoFar / (arrival.windowFrames - 1);
-        // Raise jitter to match spikes immediately, lower gradually.
-        if (arrival.lastJitter == Duration(0) || newJitter > arrival.lastJitter) {
-            arrival.lastJitter = newJitter;
-        } else {
-            arrival.lastJitter += duration_cast<Duration>(
-                kArrivalRateSmoothing * (newJitter - arrival.lastJitter));
         }
     }
 
     brls::Logger::info("Next round of stats...");
     arrival.windowStart = now;
     arrival.windowFrames = 1;
-    arrival.jitterSoFar = Duration::zero();
     return output;
 }
 
