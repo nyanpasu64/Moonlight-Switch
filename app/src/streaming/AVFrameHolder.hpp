@@ -78,14 +78,17 @@ private:
         std::chrono::nanoseconds jitter{};
     } arrival;
 
-    /// screen paints
-    std::chrono::steady_clock::time_point lastDraw{};
-    std::chrono::nanoseconds averageDrawInterval{0};
+    /// sending frames to screen paints
+    struct Draw {
+        std::chrono::steady_clock::time_point lastDraw{};
+        std::chrono::nanoseconds averageInterval{0};
 
-    double frameCredit = 0.0;
-    bool drawClockStarted = false;
-    bool startupBuffering = true;
-    bool playoutResyncNeeded = true;
+        double frameCredit = 0.0;
+        bool clockStarted = false;
+        bool startupBuffering = true;
+        bool resyncNeeded = true;
+    } draw;
+
     mutable std::mutex m_mutex;
     size_t fakeFrameUsedStat = 0;
     size_t framesDroppedStat = 0;

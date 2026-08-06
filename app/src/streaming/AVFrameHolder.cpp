@@ -92,7 +92,7 @@ bool AVFrameQueue::push(AVFrame* item) {
             overflowDropStat++;
         }
         resetArrivalRateEstimatorLocked();
-        playoutResyncNeeded = true;
+        draw.resyncNeeded = true;
     }
 
     return true;
@@ -113,30 +113,30 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
     }
 
     const auto now = std::chrono::steady_clock::now();
-    if (!drawClockStarted) {
-        lastDraw = now;
-        drawClockStarted = true;
+    if (!draw.clockStarted) {
+        draw.lastDraw = now;
+        draw.clockStarted = true;
     } else {
         const auto drawInterval =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(now - lastDraw);
-        lastDraw = now;
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now - draw.lastDraw);
+        draw.lastDraw = now;
 
         // App suspension and debugger pauses must not turn into a large burst
         // of overdue video frames when drawing resumes.
         if (drawInterval <= std::chrono::nanoseconds::zero() ||
             drawInterval > std::chrono::milliseconds(250)) {
-            averageDrawInterval = std::chrono::nanoseconds::zero();
-            frameCredit = 0.0;
-            playoutResyncNeeded = true;
-        } else if (averageDrawInterval == std::chrono::nanoseconds::zero()) {
-            averageDrawInterval = drawInterval;
+            draw.averageInterval = std::chrono::nanoseconds::zero();
+            draw.frameCredit = 0.0;
+            draw.resyncNeeded = true;
+        } else if (draw.averageInterval == std::chrono::nanoseconds::zero()) {
+            draw.averageInterval = drawInterval;
         } else {
-            averageDrawInterval =
-                (averageDrawInterval * 15 + drawInterval) / 16;
+            draw.averageInterval =
+                (draw.averageInterval * 15 + drawInterval) / 16;
         }
     }
 
-    if (startupBuffering && queue.size() <= targetBufferedFrames) {
+    if (draw.startupBuffering && queue.size() <= targetBufferedFrames) {
         if (bufferFrame) {
             fakeFrameUsedStat++;
             rebufferHoldStat++;
@@ -144,18 +144,18 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         return bufferFrame;
     }
 
-    if (startupBuffering) {
+    if (draw.startupBuffering) {
         // Establish a small jitter reserve once at startup. Rebuilding the
         // whole reserve after every ordinary miss batches a variable-rate
         // source into visible freeze-and-catch-up cycles.
-        startupBuffering = false;
-        frameCredit = 0.0;
-        playoutResyncNeeded = true;
+        draw.startupBuffering = false;
+        draw.frameCredit = 0.0;
+        draw.resyncNeeded = true;
     }
 
     size_t dueFrames = 0;
     const bool backlogResync = limit > 0 && queue.size() >= limit;
-    if ((playoutResyncNeeded || backlogResync) && !queue.empty()) {
+    if ((draw.resyncNeeded || backlogResync) && !queue.empty()) {
         // Resume immediately after a real miss. If latency has reached the
         // hard limit, discard the stale backlog once instead of repeatedly
         // overflowing the oldest frame while playback remains frozen.
@@ -163,22 +163,22 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         if (backlogResync) {
             resetArrivalRateEstimatorLocked();
         }
-        playoutResyncNeeded = false;
-        frameCredit = 0.0;
+        draw.resyncNeeded = false;
+        draw.frameCredit = 0.0;
         playoutResyncStat++;
         dueFrames = 1;
     } else if (arrival.rateSamples == 0 ||
                arrival.frameInterval <= std::chrono::nanoseconds::zero() ||
-               averageDrawInterval <= std::chrono::nanoseconds::zero()) {
+               draw.averageInterval <= std::chrono::nanoseconds::zero()) {
         // During the short measurement warm-up, consume only above the jitter
         // reserve. This follows arrivals without assuming configured FPS is
         // the FPS the host is actually producing.
         dueFrames = queue.size() > targetBufferedFrames ? 1 : 0;
     } else if (arrival.frameInterval > std::chrono::nanoseconds::zero() &&
-               averageDrawInterval > std::chrono::nanoseconds::zero()) {
+               draw.averageInterval > std::chrono::nanoseconds::zero()) {
         // input / output
         const double baseFramesPerDraw =
-            static_cast<double>(averageDrawInterval.count()) /
+            static_cast<double>(draw.averageInterval.count()) /
             static_cast<double>(arrival.frameInterval.count());
         const double desiredDepth =
             static_cast<double>(targetBufferedFrames + 1);
@@ -194,12 +194,12 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             depthError == 0.0;
 
         if (synchronized) {
-            frameCredit = 0.0;
+            draw.frameCredit = 0.0;
             dueFrames = 1;
         } else {
-            frameCredit += framesPerDraw;
-            const size_t wholeFrames = static_cast<size_t>(frameCredit);
-            frameCredit -= static_cast<double>(wholeFrames);
+            draw.frameCredit += framesPerDraw;
+            const size_t wholeFrames = static_cast<size_t>(draw.frameCredit);
+            draw.frameCredit -= static_cast<double>(wholeFrames);
             dueFrames = std::min(wholeFrames, limit);
         }
     }
@@ -214,8 +214,8 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             fakeFrameUsedStat++;
             emptyQueueStat++;
         }
-        frameCredit = 0.0;
-        playoutResyncNeeded = true;
+        draw.frameCredit = 0.0;
+        draw.resyncNeeded = true;
         // The measured cadence may now be too high because the host FPS fell.
         // Relearn it from fresh arrivals while occupancy pacing protects the
         // jitter reserve, rather than causing repeated underflow/resume cycles.
@@ -267,11 +267,7 @@ void AVFrameQueue::configure(size_t queueLimit, int configuredStreamFps,
     transferOwnership = transferOwnershipEnabled;
     streamFps = configuredStreamFps;
     arrival = Arrival{};
-    drawClockStarted = false;
-    averageDrawInterval = std::chrono::nanoseconds::zero();
-    frameCredit = 0.0;
-    startupBuffering = true;
-    playoutResyncNeeded = true;
+    draw = Draw{};
 }
 
 size_t AVFrameQueue::size() const {
@@ -384,7 +380,7 @@ bool AVFrameQueue::pushTransferredLocked(AVFrame* item) {
             overflowDropStat++;
         }
         resetArrivalRateEstimatorLocked();
-        playoutResyncNeeded = true;
+        draw.resyncNeeded = true;
     }
 
     return true;
@@ -484,12 +480,8 @@ void AVFrameQueue::cleanup() {
     maxPushBurstStat = 0;
     localClockPacedFrameStat = 0;
     playoutResyncStat = 0;
-    drawClockStarted = false;
-    averageDrawInterval = std::chrono::nanoseconds::zero();
     arrival = Arrival{};
-    frameCredit = 0.0;
-    startupBuffering = true;
-    playoutResyncNeeded = true;
+    draw = Draw{};
 
     if (bufferFrame) {
         av_frame_free(&bufferFrame);
