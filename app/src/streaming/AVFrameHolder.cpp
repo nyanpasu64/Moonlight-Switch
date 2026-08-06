@@ -413,6 +413,8 @@ bool AVFrameQueue::pushTransferredLocked(AVFrame* item) {
 // https://en.wikipedia.org/wiki/Alpha_beta_filter
 // source: eyeballing "i want the time constant around 64 frames", https://alphaarchitect.com/trend-following-filters-part-2-2/#h-alpha-beta-gamma-position-tracking-filter-frequency-response-%CE%B1-0-3289-%CE%B2-0-0654-%CE%B3-0-0065
 constexpr double ALPHA = 1. / 8.;
+// source: pulled out of my ass
+constexpr double FAST_ALPHA = 2. / 3.;
 // https://www.oedigital.com/news/457127-applying-real-time-magnetic-declination-in-arctic-marine-seismic-acquisition
 constexpr double BETA = ALPHA * ALPHA / (2. - ALPHA);
 
@@ -458,8 +460,9 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         // (3)
         const Duration residual = now - timePredicted;
         TracyPlot("residual", residual.count() / 1'000'000.);
-        // (4)
-        const Timestamp smoothedNow = timePredicted + duration_cast<Duration>(ALPHA * residual);
+        // (4) tell the truth if frame late, smooth over if frame early
+        const double alpha = (residual > Duration()) ? FAST_ALPHA : ALPHA;
+        const Timestamp smoothedNow = timePredicted + duration_cast<Duration>(alpha * residual);
         // (5)
         rate->frameInterval += duration_cast<Duration>(BETA * residual);
 
@@ -467,7 +470,7 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         arrival.lastArrival = smoothedNow;
 
         // TODO pick between stability and responsiveness
-        output = timePredicted;
+        output = smoothedNow;
     } else {
         // arrival.frameInterval is uninitialized while !arrival.rateComputed.
         arrival.lastArrival = now;
