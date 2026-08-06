@@ -341,7 +341,7 @@ double AVFrameQueue::getEstimatedSourceFps() const {
 
 double AVFrameQueue::getJitterMs() const {
     std::lock_guard<std::mutex> lock(m_mutex);
-    auto jitterNs = arrival.jitter.count();
+    auto jitterNs = arrival.lastJitter.count();
     return jitterNs / 1'000'000.;
 }
 
@@ -474,17 +474,19 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
                 sampleFps * kArrivalRateSmoothing;
         }
 
-        std::chrono::nanoseconds newJitter = arrival.jitterSoFar / (arrival.windowFrames - 1);
-        if (arrival.jitter.count()) {
-            arrival.jitter += (newJitter - arrival.jitter) / 8;
+        Duration newJitter = arrival.jitterSoFar / (arrival.windowFrames - 1);
+        // Raise jitter to match spikes immediately, lower gradually.
+        if (arrival.lastJitter == Duration(0) || newJitter > arrival.lastJitter) {
+            arrival.lastJitter = newJitter;
         } else {
-            arrival.jitter = newJitter;
+            arrival.lastJitter += Duration((int64_t) (
+                kArrivalRateSmoothing * (newJitter - arrival.lastJitter).count()));
         }
     }
 
     arrival.windowStart = now;
     arrival.windowFrames = 1;
-    arrival.jitterSoFar = std::chrono::nanoseconds::zero();
+    arrival.jitterSoFar = Duration::zero();
     return smoothedNow;
 }
 

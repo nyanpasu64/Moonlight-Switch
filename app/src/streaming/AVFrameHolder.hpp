@@ -79,7 +79,7 @@ private:
         size_t windowFrames = 0;  // TODO why not count periods rather than fenceposts?
         double estimatedSourceFps = 0.0;
         Duration jitterSoFar{};
-        Duration jitter{};
+        Duration lastJitter{};
     } arrival;
 
     /// sending frames to screen paints
