@@ -76,9 +76,8 @@ bool AVFrameQueue::push(AVFrame* item) {
         return false;
     }
 
-    Timestamp now = std::chrono::steady_clock::now();
-    queue.push({now, queuedFrame});
-    recordArrivalLocked(now);
+    Timestamp recvSmoothed = recordArrivalLocked(std::chrono::steady_clock::now());
+    queue.push(TimedFrame{recvSmoothed, queuedFrame});
     pushesSincePop++;
     maxPushBurstStat = std::max(maxPushBurstStat, pushesSincePop);
 
@@ -167,7 +166,7 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         draw.frameCredit = 0.0;
         playoutResyncStat++;
         dueFrames = 1;
-    } else if (arrival.rateSamples == 0 ||
+    } else if (!arrival.rateComputed ||
                arrival.frameInterval <= std::chrono::nanoseconds::zero() ||
                draw.averageInterval <= std::chrono::nanoseconds::zero()) {
         // During the short measurement warm-up, consume only above the jitter
@@ -364,9 +363,8 @@ bool AVFrameQueue::pushTransferredLocked(AVFrame* item) {
         return false;
     }
 
-    Timestamp now = std::chrono::steady_clock::now();
-    queue.push({now, item});
-    recordArrivalLocked(now);
+    Timestamp recvSmoothed = recordArrivalLocked(std::chrono::steady_clock::now());
+    queue.push(TimedFrame{recvSmoothed, item});
     pushesSincePop++;
     maxPushBurstStat = std::max(maxPushBurstStat, pushesSincePop);
 
@@ -386,48 +384,88 @@ bool AVFrameQueue::pushTransferredLocked(AVFrame* item) {
     return true;
 }
 
-void AVFrameQueue::recordArrivalLocked(
-    std::chrono::steady_clock::time_point now) {
-    if (!arrival.clockStarted) {
-        arrival.clockStarted = true;
+// https://en.wikipedia.org/wiki/Alpha_beta_filter
+// source: i made it up
+constexpr double ALPHA = 1. / 3.;
+// https://www.oedigital.com/news/457127-applying-real-time-magnetic-declination-in-arctic-marine-seismic-acquisition
+constexpr double BETA = ALPHA * ALPHA / (2. - ALPHA);
+
+Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
+    auto initArrival = [&]() {
         arrival.windowStart = now;
         arrival.lastArrival = now;
         arrival.windowFrames = 1;
         arrival.jitterSoFar = std::chrono::nanoseconds::zero();
-        return;
+        return now;
+    };
+
+    if (!arrival.clockStarted) {
+        arrival.clockStarted = true;
+        return initArrival();
     }
 
     if (now - arrival.lastArrival > kArrivalRateResetGap) {
         // Do not interpret a network pause or app suspension as a permanent
         // low source rate. Start a fresh window when frames resume.
-        arrival.windowStart = now;
-        arrival.lastArrival = now;
-        arrival.windowFrames = 1;
-        arrival.jitterSoFar = std::chrono::nanoseconds::zero();
-        return;
+        return initArrival();
     }
 
     arrival.jitterSoFar += abs(now - arrival.lastArrival - arrival.frameInterval);
-    arrival.lastArrival = now;
     arrival.windowFrames++;
 
-    const auto elapsed = now - arrival.windowStart;
+    // Estimate smoothed time for frame pacing.
+    Timestamp smoothedNow = now;
+    if (arrival.rateComputed) {
+        // https://en.wikipedia.org/wiki/Alpha_beta_filter
+        // (1)
+        smoothedNow = arrival.lastArrival + arrival.frameInterval;
+        // (3)
+        Duration residual = now - smoothedNow;
+        // (4)
+        smoothedNow += Duration((int64_t) ALPHA * residual.count());
+        // (5)
+        arrival.frameInterval += Duration((int64_t) BETA * residual.count());
+
+        // The next iteration's step (1) takes *filter output*, not unfiltered now!
+        arrival.lastArrival = smoothedNow;
+    } else {
+        smoothedNow = now;
+    }
+
+    const Duration elapsed = now - arrival.windowStart;
+
+    // Periodically recompute stats.
     if (elapsed < kArrivalRateWindow) {
-        return;
+        return smoothedNow;
     }
 
     if (arrival.windowFrames > 1) {
+        // duration<double>() is measured in seconds: https://en.cppreference.com/cpp/chrono/duration
         const double elapsedSeconds =
             std::chrono::duration<double>(elapsed).count();
-        double sampleFps =
-            static_cast<double>(arrival.windowFrames - 1) / elapsedSeconds;
+
         const double maximumFps =
             streamFps > 0 ? static_cast<double>(streamFps) : 240.0;
-        sampleFps = std::clamp(sampleFps, 1.0, maximumFps);
 
-        if (arrival.rateSamples == 0) {
+        if (!arrival.rateComputed) {
+            arrival.rateComputed = true;
+
+            double sampleFps = static_cast<double>(arrival.windowFrames - 1) / elapsedSeconds;
+            sampleFps = std::clamp(sampleFps, 1.0, maximumFps);
             arrival.estimatedSourceFps = sampleFps;
+
+            // Initialize arrival.frameInterval with estimated interval.
+            // (no left/both taper, but it's good enough for an initial guess.)
+            arrival.frameInterval = std::chrono::nanoseconds(
+                static_cast<int64_t>(1000000000.0 / arrival.estimatedSourceFps));
         } else {
+            const double dSecPerFrame = arrival.frameInterval.count() / 1'000'000'000.;
+
+            // Used to be `static_cast<double>(arrival.windowFrames - 1) / elapsedSeconds`
+            // but I feel like using the filtered frameInterval today.
+            double sampleFps = 1. / dSecPerFrame;
+            sampleFps = std::clamp(sampleFps, 1.0, maximumFps);
+
             // The quarter-second sample ignores short decoder bursts. The EMA
             // follows sustained FPS changes without making network jitter a
             // new presentation cadence every window.
@@ -435,9 +473,6 @@ void AVFrameQueue::recordArrivalLocked(
                 arrival.estimatedSourceFps * (1.0 - kArrivalRateSmoothing) +
                 sampleFps * kArrivalRateSmoothing;
         }
-        arrival.rateSamples++;
-        arrival.frameInterval = std::chrono::nanoseconds(
-            static_cast<int64_t>(1000000000.0 / arrival.estimatedSourceFps));
 
         std::chrono::nanoseconds newJitter = arrival.jitterSoFar / (arrival.windowFrames - 1);
         if (arrival.jitter.count()) {
@@ -450,6 +485,7 @@ void AVFrameQueue::recordArrivalLocked(
     arrival.windowStart = now;
     arrival.windowFrames = 1;
     arrival.jitterSoFar = std::chrono::nanoseconds::zero();
+    return smoothedNow;
 }
 
 void AVFrameQueue::resetArrivalRateEstimatorLocked() {

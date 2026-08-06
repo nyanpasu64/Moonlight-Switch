@@ -12,9 +12,10 @@ extern "C" {
 }
 
 using Timestamp = std::chrono::steady_clock::time_point;
+using Duration = std::chrono::nanoseconds;
 
 struct TimedFrame {
-    Timestamp readyTime;
+    Timestamp readyTimeEst;
     AVFrame* frame;
 };
 
@@ -54,7 +55,7 @@ private:
     friend class AVFrameHolder;
     AVFrame* acquireFrameLocked();
     bool pushTransferredLocked(AVFrame* item);
-    void recordArrivalLocked(std::chrono::steady_clock::time_point now);
+    Timestamp recordArrivalLocked(Timestamp now);
     void resetArrivalRateEstimatorLocked();
     void trimToPlayoutWindowLocked();
     size_t limit = 0;
@@ -68,14 +69,17 @@ private:
     /// received frames
     struct Arrival {
         bool clockStarted = false;
-        std::chrono::steady_clock::time_point windowStart{};
-        std::chrono::steady_clock::time_point lastArrival{};
+        bool rateComputed = false;
+
+        /// alpha-beta filter for running fps
+        Timestamp lastArrival{};
+        Duration frameInterval{0};
+
+        Timestamp windowStart{};
         size_t windowFrames = 0;  // TODO why not count periods rather than fenceposts?
-        size_t rateSamples = 0;
-        std::chrono::nanoseconds frameInterval{0};
         double estimatedSourceFps = 0.0;
-        std::chrono::nanoseconds jitterSoFar{};
-        std::chrono::nanoseconds jitter{};
+        Duration jitterSoFar{};
+        Duration jitter{};
     } arrival;
 
     /// sending frames to screen paints
