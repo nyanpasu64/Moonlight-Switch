@@ -187,7 +187,13 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             static_cast<double>(draw.averageInterval.count()) /
             static_cast<double>(arrival.frameInterval.count());
 
+        TracyPlot("baseFramesPerDraw", baseFramesPerDraw);
+        TracyPlot("queue.size()", (int64_t)queue.size());
+
         for (; dueFrames < queue.size(); dueFrames++) {
+            TracyPlot("time since queue[dueFrames].timeEstimate",
+                (now - queue[dueFrames].timeEstimate).count() / 1'000'000.);
+
             // Always show at least 1 frame if the server isn't slow.
             if (baseFramesPerDraw >= 0.98 && dueFrames <= 0) {
                 continue;
@@ -240,6 +246,8 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             bufferFrame = item.frame;
         }
     }
+
+    TracyPlot("queue.size()", (int64_t)queue.size());
 
     if (consumed) {
         *consumed = true;
