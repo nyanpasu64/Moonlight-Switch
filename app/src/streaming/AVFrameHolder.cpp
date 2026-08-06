@@ -10,6 +10,8 @@
 #include <algorithm>
 #include <tracy/Tracy.hpp>
 
+using std::chrono::duration_cast;
+
 namespace {
 
 constexpr size_t kBurstHeadroomFrames = 5;
@@ -428,9 +430,9 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         const Duration residual = now - timePredicted;
         TracyPlot("residual", residual.count() / 1'000'000.);
         // (4)
-        const Timestamp smoothedNow = timePredicted + Duration((int64_t) (ALPHA * residual.count()));
+        const Timestamp smoothedNow = timePredicted + duration_cast<Duration>(ALPHA * residual);
         // (5)
-        arrival.frameInterval += Duration((int64_t) (BETA * residual.count()));
+        arrival.frameInterval += duration_cast<Duration>(BETA * residual);
 
         // The next iteration's step (1) takes *filter output*, not unfiltered now!
         arrival.lastArrival = smoothedNow;
@@ -502,8 +504,8 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         if (arrival.lastJitter == Duration(0) || newJitter > arrival.lastJitter) {
             arrival.lastJitter = newJitter;
         } else {
-            arrival.lastJitter += Duration((int64_t) (
-                kArrivalRateSmoothing * (newJitter - arrival.lastJitter).count()));
+            arrival.lastJitter += duration_cast<Duration>(
+                kArrivalRateSmoothing * (newJitter - arrival.lastJitter));
         }
     }
 
