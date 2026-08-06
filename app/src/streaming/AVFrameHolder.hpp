@@ -6,6 +6,7 @@
 #include "Settings.hpp"
 #include <mutex>
 #include <queue>
+#include <deque>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -15,7 +16,7 @@ using Timestamp = std::chrono::steady_clock::time_point;
 using Duration = std::chrono::nanoseconds;
 
 struct TimedFrame {
-    Timestamp readyTimeEst;
+    Timestamp timeEstimate;
     AVFrame* frame;
 };
 
@@ -59,7 +60,7 @@ private:
     void resetArrivalRateEstimatorLocked();
     void trimToPlayoutWindowLocked();
     size_t limit = 0;
-    std::queue<TimedFrame> queue;
+    std::deque<TimedFrame> queue;
     std::queue<AVFrame*> freeQueue;
     AVFrame* bufferFrame = nullptr;
     bool transferOwnership = false;

@@ -25,8 +25,8 @@ void freeFrameQueue(std::queue<AVFrame*>& frames) {
     }
 }
 
-void freeTimedFrames(std::queue<TimedFrame>& frames) {
-    for (; !frames.empty(); frames.pop()) {
+void freeTimedFrames(std::deque<TimedFrame>& frames) {
+    for (; !frames.empty(); frames.pop_front()) {
         AVFrame* frame = frames.front().frame;
         av_frame_free(&frame);
     }
@@ -76,8 +76,8 @@ bool AVFrameQueue::push(AVFrame* item) {
         return false;
     }
 
-    Timestamp recvSmoothed = recordArrivalLocked(std::chrono::steady_clock::now());
-    queue.push(TimedFrame{recvSmoothed, queuedFrame});
+    const Timestamp timeEstimate = recordArrivalLocked(std::chrono::steady_clock::now());
+    queue.push_back(TimedFrame{timeEstimate, queuedFrame});
     pushesSincePop++;
     maxPushBurstStat = std::max(maxPushBurstStat, pushesSincePop);
 
@@ -85,7 +85,7 @@ bool AVFrameQueue::push(AVFrame* item) {
         const size_t keepFrames = targetBufferedFrames + 1;
         while (queue.size() > keepFrames) {
             AVFrame* droppedFrame = queue.front().frame;
-            queue.pop();
+            queue.pop_front();
             recycleFrame(freeQueue, droppedFrame);
             framesDroppedStat++;
             overflowDropStat++;
@@ -179,27 +179,19 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         const double baseFramesPerDraw =
             static_cast<double>(draw.averageInterval.count()) /
             static_cast<double>(arrival.frameInterval.count());
-        const double desiredDepth =
-            static_cast<double>(targetBufferedFrames + 1);
-        const double depthError =
-            static_cast<double>(queue.size()) - desiredDepth;
-        const double occupancyCorrection = std::clamp(
-            depthError * kOccupancyCorrectionPerFrame,
-            -kMaximumOccupancyCorrection, kMaximumOccupancyCorrection);
-        const double framesPerDraw =
-            std::max(0.0, baseFramesPerDraw + occupancyCorrection);
 
-        bool synchronized = baseFramesPerDraw >= 0.98 && baseFramesPerDraw <= 1.02 &&
-            depthError == 0.0;
+        for (; dueFrames < queue.size(); dueFrames++) {
+            // Always show at least 1 frame if the server isn't slow.
+            if (baseFramesPerDraw >= 0.98 && dueFrames <= 0) {
+                continue;
+            }
 
-        if (synchronized) {
-            draw.frameCredit = 0.0;
-            dueFrames = 1;
-        } else {
-            draw.frameCredit += framesPerDraw;
-            const size_t wholeFrames = static_cast<size_t>(draw.frameCredit);
-            draw.frameCredit -= static_cast<double>(wholeFrames);
-            dueFrames = std::min(wholeFrames, limit);
+            // We shouldn't skip frame 0 to a just-received frame 1, since the next
+            // present may not have frame 2 ready, resulting in a duplicated frame.
+            const Timestamp safeArrivalTime = now - 2 * arrival.lastJitter;
+            if (queue[dueFrames].timeEstimate > safeArrivalTime) {
+                break;
+            }
         }
     }
 
@@ -227,7 +219,7 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
     recycleFrame(freeQueue, bufferFrame);
     for (size_t i = 0; i < consumeCount; i++) {
         TimedFrame item = queue.front();
-        queue.pop();
+        queue.pop_front();
 
         if (i + 1 < consumeCount) {
             recycleFrame(freeQueue, item.frame);
@@ -363,8 +355,8 @@ bool AVFrameQueue::pushTransferredLocked(AVFrame* item) {
         return false;
     }
 
-    Timestamp recvSmoothed = recordArrivalLocked(std::chrono::steady_clock::now());
-    queue.push(TimedFrame{recvSmoothed, item});
+    const Timestamp timeEstimate = recordArrivalLocked(std::chrono::steady_clock::now());
+    queue.push_back(TimedFrame{timeEstimate, item});
     pushesSincePop++;
     maxPushBurstStat = std::max(maxPushBurstStat, pushesSincePop);
 
@@ -372,7 +364,7 @@ bool AVFrameQueue::pushTransferredLocked(AVFrame* item) {
         const size_t keepFrames = targetBufferedFrames + 1;
         while (queue.size() > keepFrames) {
             AVFrame* droppedFrame = queue.front().frame;
-            queue.pop();
+            queue.pop_front();
             recycleFrame(freeQueue, droppedFrame);
             framesDroppedStat++;
             overflowDropStat++;
@@ -414,29 +406,32 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
     arrival.windowFrames++;
 
     // Estimate smoothed time for frame pacing.
-    Timestamp smoothedNow = now;
+    Timestamp output;
     if (arrival.rateComputed) {
         // https://en.wikipedia.org/wiki/Alpha_beta_filter
         // (1)
-        smoothedNow = arrival.lastArrival + arrival.frameInterval;
+        const Timestamp timePredicted = arrival.lastArrival + arrival.frameInterval;
         // (3)
-        Duration residual = now - smoothedNow;
+        const Duration residual = now - timePredicted;
         // (4)
-        smoothedNow += Duration((int64_t) ALPHA * residual.count());
+        const Timestamp smoothedNow = timePredicted + Duration((int64_t) ALPHA * residual.count());
         // (5)
         arrival.frameInterval += Duration((int64_t) BETA * residual.count());
 
         // The next iteration's step (1) takes *filter output*, not unfiltered now!
         arrival.lastArrival = smoothedNow;
+
+        // TODO pick between stability and responsiveness
+        output = timePredicted;
     } else {
-        smoothedNow = now;
+        output = now;
     }
 
     const Duration elapsed = now - arrival.windowStart;
 
     // Periodically recompute stats.
     if (elapsed < kArrivalRateWindow) {
-        return smoothedNow;
+        return output;
     }
 
     if (arrival.windowFrames > 1) {
@@ -487,7 +482,7 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
     arrival.windowStart = now;
     arrival.windowFrames = 1;
     arrival.jitterSoFar = Duration::zero();
-    return smoothedNow;
+    return output;
 }
 
 void AVFrameQueue::resetArrivalRateEstimatorLocked() {
@@ -498,7 +493,7 @@ void AVFrameQueue::trimToPlayoutWindowLocked() {
     const size_t keepFrames = targetBufferedFrames + 1;
     while (queue.size() > keepFrames) {
         TimedFrame droppedFrame = queue.front();
-        queue.pop();
+        queue.pop_front();
         recycleFrame(freeQueue, droppedFrame.frame);
         framesDroppedStat++;
         pacingSkipStat++;
