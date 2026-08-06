@@ -395,6 +395,7 @@ void StreamingView::draw(NVGcontext* vg, float x, float y, float width,
                                   "Scheduled frame holds: {}\n"
                                   "Frames presented by local clock: {}\n"
                                   "Playout resyncs | estimated source: {} | {:.2f} FPS\n"
+                                  "Framerate jitter: {}\n"
                                   "Max pushes between draws: {}\n"
                                   "Frames queue depth | target | capacity: {} | {} | {}",
                                   AVFrameHolder::instance().getFakeFrameStat(),
@@ -407,6 +408,7 @@ void StreamingView::draw(NVGcontext* vg, float x, float y, float width,
                                   AVFrameHolder::instance().getFrameQueueLocalClockPacedFrameStat(),
                                   AVFrameHolder::instance().getFrameQueuePlayoutResyncStat(),
                                   AVFrameHolder::instance().getFrameQueueEstimatedSourceFps(),
+                                  AVFrameHolder::instance().getFrameQueueJitterMs(),
                                   AVFrameHolder::instance().getFrameQueueMaxPushBurstStat(),
                                   AVFrameHolder::instance().getFrameQueueSize(),
                                   AVFrameHolder::instance().getFrameQueueTargetDepth(),

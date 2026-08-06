@@ -39,6 +39,7 @@ public:
     [[nodiscard]] size_t getLocalClockPacedFrameStat() const;
     [[nodiscard]] size_t getPlayoutResyncStat() const;
     [[nodiscard]] double getEstimatedSourceFps() const;
+    [[nodiscard]] double getJitterMs() const;
 
     void cleanup();
 
@@ -56,14 +57,21 @@ private:
     bool transferOwnership = false;
     size_t targetBufferedFrames = 0;
     int streamFps = 0;
+
+    // received frames
     std::chrono::nanoseconds adaptiveFrameInterval{0};
-    std::chrono::steady_clock::time_point lastDraw{};
-    std::chrono::nanoseconds averageDrawInterval{0};
     std::chrono::steady_clock::time_point arrivalWindowStart{};
     std::chrono::steady_clock::time_point lastArrival{};
-    size_t arrivalWindowFrames = 0;
+    size_t arrivalWindowFrames = 0;  // TODO why not count periods rather than fenceposts?
     size_t arrivalRateSamples = 0;
     double estimatedSourceFps = 0.0;
+    std::chrono::nanoseconds arrivalJitterSoFar{};
+    std::chrono::nanoseconds arrivalJitter{};
+
+    /// screen paints
+    std::chrono::steady_clock::time_point lastDraw{};
+    std::chrono::nanoseconds averageDrawInterval{0};
+
     double frameCredit = 0.0;
     bool drawClockStarted = false;
     bool arrivalClockStarted = false;
@@ -132,6 +140,7 @@ class AVFrameHolder : public Singleton<AVFrameHolder> {
     [[nodiscard]] size_t getFrameQueueLocalClockPacedFrameStat() const { return m_frame_queue.getLocalClockPacedFrameStat(); }
     [[nodiscard]] size_t getFrameQueuePlayoutResyncStat() const { return m_frame_queue.getPlayoutResyncStat(); }
     [[nodiscard]] double getFrameQueueEstimatedSourceFps() const { return m_frame_queue.getEstimatedSourceFps(); }
+    [[nodiscard]] double getFrameQueueJitterMs() const { return m_frame_queue.getJitterMs(); }
 
   private:
     AVFrameQueue m_frame_queue;

@@ -256,6 +256,8 @@ void AVFrameQueue::configure(size_t queueLimit, int configuredStreamFps,
     transferOwnership = transferOwnershipEnabled;
     streamFps = configuredStreamFps;
     adaptiveFrameInterval = std::chrono::nanoseconds::zero();
+    arrivalJitterSoFar = std::chrono::nanoseconds::zero();
+    arrivalJitter = std::chrono::nanoseconds::zero();
     drawClockStarted = false;
     averageDrawInterval = std::chrono::nanoseconds::zero();
     arrivalClockStarted = false;
@@ -337,6 +339,12 @@ double AVFrameQueue::getEstimatedSourceFps() const {
     return estimatedSourceFps;
 }
 
+double AVFrameQueue::getJitterMs() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    auto jitterNs = arrivalJitter.count();
+    return jitterNs / 1'000'000.;
+}
+
 AVFrame* AVFrameQueue::acquireFrameLocked() {
     AVFrame* frame = nullptr;
     if (!freeQueue.empty()) {
@@ -383,6 +391,7 @@ void AVFrameQueue::recordArrivalLocked(
         arrivalWindowStart = now;
         lastArrival = now;
         arrivalWindowFrames = 1;
+        arrivalJitterSoFar = std::chrono::nanoseconds::zero();
         return;
     }
 
@@ -392,11 +401,14 @@ void AVFrameQueue::recordArrivalLocked(
         arrivalWindowStart = now;
         lastArrival = now;
         arrivalWindowFrames = 1;
+        arrivalJitterSoFar = std::chrono::nanoseconds::zero();
         return;
     }
 
+    arrivalJitterSoFar += abs(now - lastArrival - adaptiveFrameInterval);
     lastArrival = now;
     arrivalWindowFrames++;
+
     const auto elapsed = now - arrivalWindowStart;
     if (elapsed < kArrivalRateWindow) {
         return;
@@ -424,10 +436,13 @@ void AVFrameQueue::recordArrivalLocked(
         arrivalRateSamples++;
         adaptiveFrameInterval = std::chrono::nanoseconds(
             static_cast<int64_t>(1000000000.0 / estimatedSourceFps));
+
+        arrivalJitter = arrivalJitterSoFar / (arrivalWindowFrames - 1);
     }
 
     arrivalWindowStart = now;
     arrivalWindowFrames = 1;
+    arrivalJitterSoFar = std::chrono::nanoseconds::zero();
 }
 
 void AVFrameQueue::resetArrivalRateEstimatorLocked() {
@@ -436,6 +451,8 @@ void AVFrameQueue::resetArrivalRateEstimatorLocked() {
     arrivalRateSamples = 0;
     estimatedSourceFps = 0.0;
     adaptiveFrameInterval = std::chrono::nanoseconds::zero();
+    arrivalJitterSoFar = std::chrono::nanoseconds::zero();
+    arrivalJitter = std::chrono::nanoseconds::zero();
 }
 
 void AVFrameQueue::trimToPlayoutWindowLocked() {
@@ -469,6 +486,8 @@ void AVFrameQueue::cleanup() {
     arrivalRateSamples = 0;
     estimatedSourceFps = 0.0;
     adaptiveFrameInterval = std::chrono::nanoseconds::zero();
+    arrivalJitterSoFar = std::chrono::nanoseconds::zero();
+    arrivalJitter = std::chrono::nanoseconds::zero();
     frameCredit = 0.0;
     startupBuffering = true;
     playoutResyncNeeded = true;
