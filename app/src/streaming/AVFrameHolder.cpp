@@ -167,19 +167,19 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         frameCredit = 0.0;
         playoutResyncStat++;
         dueFrames = 1;
-    } else if (arrivalRateSamples == 0 ||
-               adaptiveFrameInterval <= std::chrono::nanoseconds::zero() ||
+    } else if (arrival.rateSamples == 0 ||
+               arrival.frameInterval <= std::chrono::nanoseconds::zero() ||
                averageDrawInterval <= std::chrono::nanoseconds::zero()) {
         // During the short measurement warm-up, consume only above the jitter
         // reserve. This follows arrivals without assuming configured FPS is
         // the FPS the host is actually producing.
         dueFrames = queue.size() > targetBufferedFrames ? 1 : 0;
-    } else if (adaptiveFrameInterval > std::chrono::nanoseconds::zero() &&
+    } else if (arrival.frameInterval > std::chrono::nanoseconds::zero() &&
                averageDrawInterval > std::chrono::nanoseconds::zero()) {
         // input / output
         const double baseFramesPerDraw =
             static_cast<double>(averageDrawInterval.count()) /
-            static_cast<double>(adaptiveFrameInterval.count());
+            static_cast<double>(arrival.frameInterval.count());
         const double desiredDepth =
             static_cast<double>(targetBufferedFrames + 1);
         const double depthError =
@@ -266,15 +266,9 @@ void AVFrameQueue::configure(size_t queueLimit, int configuredStreamFps,
         configuredDepth > 1 ? std::min<size_t>(configuredDepth - 1, 2) : 0;
     transferOwnership = transferOwnershipEnabled;
     streamFps = configuredStreamFps;
-    adaptiveFrameInterval = std::chrono::nanoseconds::zero();
-    arrivalJitterSoFar = std::chrono::nanoseconds::zero();
-    arrivalJitter = std::chrono::nanoseconds::zero();
+    arrival = Arrival{};
     drawClockStarted = false;
     averageDrawInterval = std::chrono::nanoseconds::zero();
-    arrivalClockStarted = false;
-    arrivalWindowFrames = 0;
-    arrivalRateSamples = 0;
-    estimatedSourceFps = 0.0;
     frameCredit = 0.0;
     startupBuffering = true;
     playoutResyncNeeded = true;
@@ -347,12 +341,12 @@ size_t AVFrameQueue::getPlayoutResyncStat() const {
 
 double AVFrameQueue::getEstimatedSourceFps() const {
     std::lock_guard<std::mutex> lock(m_mutex);
-    return estimatedSourceFps;
+    return arrival.estimatedSourceFps;
 }
 
 double AVFrameQueue::getJitterMs() const {
     std::lock_guard<std::mutex> lock(m_mutex);
-    auto jitterNs = arrivalJitter.count();
+    auto jitterNs = arrival.jitter.count();
     return jitterNs / 1'000'000.;
 }
 
@@ -398,78 +392,72 @@ bool AVFrameQueue::pushTransferredLocked(AVFrame* item) {
 
 void AVFrameQueue::recordArrivalLocked(
     std::chrono::steady_clock::time_point now) {
-    if (!arrivalClockStarted) {
-        arrivalClockStarted = true;
-        arrivalWindowStart = now;
-        lastArrival = now;
-        arrivalWindowFrames = 1;
-        arrivalJitterSoFar = std::chrono::nanoseconds::zero();
+    if (!arrival.clockStarted) {
+        arrival.clockStarted = true;
+        arrival.windowStart = now;
+        arrival.lastArrival = now;
+        arrival.windowFrames = 1;
+        arrival.jitterSoFar = std::chrono::nanoseconds::zero();
         return;
     }
 
-    if (now - lastArrival > kArrivalRateResetGap) {
+    if (now - arrival.lastArrival > kArrivalRateResetGap) {
         // Do not interpret a network pause or app suspension as a permanent
         // low source rate. Start a fresh window when frames resume.
-        arrivalWindowStart = now;
-        lastArrival = now;
-        arrivalWindowFrames = 1;
-        arrivalJitterSoFar = std::chrono::nanoseconds::zero();
+        arrival.windowStart = now;
+        arrival.lastArrival = now;
+        arrival.windowFrames = 1;
+        arrival.jitterSoFar = std::chrono::nanoseconds::zero();
         return;
     }
 
-    arrivalJitterSoFar += abs(now - lastArrival - adaptiveFrameInterval);
-    lastArrival = now;
-    arrivalWindowFrames++;
+    arrival.jitterSoFar += abs(now - arrival.lastArrival - arrival.frameInterval);
+    arrival.lastArrival = now;
+    arrival.windowFrames++;
 
-    const auto elapsed = now - arrivalWindowStart;
+    const auto elapsed = now - arrival.windowStart;
     if (elapsed < kArrivalRateWindow) {
         return;
     }
 
-    if (arrivalWindowFrames > 1) {
+    if (arrival.windowFrames > 1) {
         const double elapsedSeconds =
             std::chrono::duration<double>(elapsed).count();
         double sampleFps =
-            static_cast<double>(arrivalWindowFrames - 1) / elapsedSeconds;
+            static_cast<double>(arrival.windowFrames - 1) / elapsedSeconds;
         const double maximumFps =
             streamFps > 0 ? static_cast<double>(streamFps) : 240.0;
         sampleFps = std::clamp(sampleFps, 1.0, maximumFps);
 
-        if (arrivalRateSamples == 0) {
-            estimatedSourceFps = sampleFps;
+        if (arrival.rateSamples == 0) {
+            arrival.estimatedSourceFps = sampleFps;
         } else {
             // The quarter-second sample ignores short decoder bursts. The EMA
             // follows sustained FPS changes without making network jitter a
             // new presentation cadence every window.
-            estimatedSourceFps =
-                estimatedSourceFps * (1.0 - kArrivalRateSmoothing) +
+            arrival.estimatedSourceFps =
+                arrival.estimatedSourceFps * (1.0 - kArrivalRateSmoothing) +
                 sampleFps * kArrivalRateSmoothing;
         }
-        arrivalRateSamples++;
-        adaptiveFrameInterval = std::chrono::nanoseconds(
-            static_cast<int64_t>(1000000000.0 / estimatedSourceFps));
+        arrival.rateSamples++;
+        arrival.frameInterval = std::chrono::nanoseconds(
+            static_cast<int64_t>(1000000000.0 / arrival.estimatedSourceFps));
 
-        std::chrono::nanoseconds newJitter = arrivalJitterSoFar / (arrivalWindowFrames - 1);
-        if (arrivalJitter.count()) {
-            arrivalJitter += (newJitter - arrivalJitter) / 8;
+        std::chrono::nanoseconds newJitter = arrival.jitterSoFar / (arrival.windowFrames - 1);
+        if (arrival.jitter.count()) {
+            arrival.jitter += (newJitter - arrival.jitter) / 8;
         } else {
-            arrivalJitter = newJitter;
+            arrival.jitter = newJitter;
         }
     }
 
-    arrivalWindowStart = now;
-    arrivalWindowFrames = 1;
-    arrivalJitterSoFar = std::chrono::nanoseconds::zero();
+    arrival.windowStart = now;
+    arrival.windowFrames = 1;
+    arrival.jitterSoFar = std::chrono::nanoseconds::zero();
 }
 
 void AVFrameQueue::resetArrivalRateEstimatorLocked() {
-    arrivalClockStarted = false;
-    arrivalWindowFrames = 0;
-    arrivalRateSamples = 0;
-    estimatedSourceFps = 0.0;
-    adaptiveFrameInterval = std::chrono::nanoseconds::zero();
-    arrivalJitterSoFar = std::chrono::nanoseconds::zero();
-    arrivalJitter = std::chrono::nanoseconds::zero();
+    arrival = Arrival{};
 }
 
 void AVFrameQueue::trimToPlayoutWindowLocked() {
@@ -498,13 +486,7 @@ void AVFrameQueue::cleanup() {
     playoutResyncStat = 0;
     drawClockStarted = false;
     averageDrawInterval = std::chrono::nanoseconds::zero();
-    arrivalClockStarted = false;
-    arrivalWindowFrames = 0;
-    arrivalRateSamples = 0;
-    estimatedSourceFps = 0.0;
-    adaptiveFrameInterval = std::chrono::nanoseconds::zero();
-    arrivalJitterSoFar = std::chrono::nanoseconds::zero();
-    arrivalJitter = std::chrono::nanoseconds::zero();
+    arrival = Arrival{};
     frameCredit = 0.0;
     startupBuffering = true;
     playoutResyncNeeded = true;

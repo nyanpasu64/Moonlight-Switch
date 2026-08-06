@@ -65,15 +65,18 @@ private:
     size_t targetBufferedFrames = 0;
     int streamFps = 0;
 
-    // received frames
-    std::chrono::nanoseconds adaptiveFrameInterval{0};
-    std::chrono::steady_clock::time_point arrivalWindowStart{};
-    std::chrono::steady_clock::time_point lastArrival{};
-    size_t arrivalWindowFrames = 0;  // TODO why not count periods rather than fenceposts?
-    size_t arrivalRateSamples = 0;
-    double estimatedSourceFps = 0.0;
-    std::chrono::nanoseconds arrivalJitterSoFar{};
-    std::chrono::nanoseconds arrivalJitter{};
+    /// received frames
+    struct Arrival {
+        bool clockStarted = false;
+        std::chrono::steady_clock::time_point windowStart{};
+        std::chrono::steady_clock::time_point lastArrival{};
+        size_t windowFrames = 0;  // TODO why not count periods rather than fenceposts?
+        size_t rateSamples = 0;
+        std::chrono::nanoseconds frameInterval{0};
+        double estimatedSourceFps = 0.0;
+        std::chrono::nanoseconds jitterSoFar{};
+        std::chrono::nanoseconds jitter{};
+    } arrival;
 
     /// screen paints
     std::chrono::steady_clock::time_point lastDraw{};
@@ -81,7 +84,6 @@ private:
 
     double frameCredit = 0.0;
     bool drawClockStarted = false;
-    bool arrivalClockStarted = false;
     bool startupBuffering = true;
     bool playoutResyncNeeded = true;
     mutable std::mutex m_mutex;
