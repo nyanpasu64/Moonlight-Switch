@@ -25,6 +25,13 @@ void freeFrameQueue(std::queue<AVFrame*>& frames) {
     }
 }
 
+void freeTimedFrames(std::queue<TimedFrame>& frames) {
+    for (; !frames.empty(); frames.pop()) {
+        AVFrame* frame = frames.front().frame;
+        av_frame_free(&frame);
+    }
+}
+
 void recycleFrame(std::queue<AVFrame*>& freeQueue, AVFrame*& frame) {
     if (!frame) {
         return;
@@ -69,15 +76,16 @@ bool AVFrameQueue::push(AVFrame* item) {
         return false;
     }
 
-    queue.push(queuedFrame);
-    recordArrivalLocked(std::chrono::steady_clock::now());
+    Timestamp now = std::chrono::steady_clock::now();
+    queue.push({now, queuedFrame});
+    recordArrivalLocked(now);
     pushesSincePop++;
     maxPushBurstStat = std::max(maxPushBurstStat, pushesSincePop);
 
     if (queue.size() > limit) {
         const size_t keepFrames = targetBufferedFrames + 1;
         while (queue.size() > keepFrames) {
-            AVFrame* droppedFrame = queue.front();
+            AVFrame* droppedFrame = queue.front().frame;
             queue.pop();
             recycleFrame(freeQueue, droppedFrame);
             framesDroppedStat++;
@@ -168,6 +176,7 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         dueFrames = queue.size() > targetBufferedFrames ? 1 : 0;
     } else if (adaptiveFrameInterval > std::chrono::nanoseconds::zero() &&
                averageDrawInterval > std::chrono::nanoseconds::zero()) {
+        // input / output
         const double baseFramesPerDraw =
             static_cast<double>(averageDrawInterval.count()) /
             static_cast<double>(adaptiveFrameInterval.count());
@@ -181,8 +190,10 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         const double framesPerDraw =
             std::max(0.0, baseFramesPerDraw + occupancyCorrection);
 
-        if (baseFramesPerDraw >= 0.98 && baseFramesPerDraw <= 1.02 &&
-            depthError == 0.0) {
+        bool synchronized = baseFramesPerDraw >= 0.98 && baseFramesPerDraw <= 1.02 &&
+            depthError == 0.0;
+
+        if (synchronized) {
             frameCredit = 0.0;
             dueFrames = 1;
         } else {
@@ -216,15 +227,15 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
 
     recycleFrame(freeQueue, bufferFrame);
     for (size_t i = 0; i < consumeCount; i++) {
-        AVFrame* item = queue.front();
+        TimedFrame item = queue.front();
         queue.pop();
 
         if (i + 1 < consumeCount) {
-            recycleFrame(freeQueue, item);
+            recycleFrame(freeQueue, item.frame);
             framesDroppedStat++;
             pacingSkipStat++;
         } else {
-            bufferFrame = item;
+            bufferFrame = item.frame;
         }
     }
 
@@ -363,15 +374,16 @@ bool AVFrameQueue::pushTransferredLocked(AVFrame* item) {
         return false;
     }
 
-    queue.push(item);
-    recordArrivalLocked(std::chrono::steady_clock::now());
+    Timestamp now = std::chrono::steady_clock::now();
+    queue.push({now, item});
+    recordArrivalLocked(now);
     pushesSincePop++;
     maxPushBurstStat = std::max(maxPushBurstStat, pushesSincePop);
 
     if (queue.size() > limit) {
         const size_t keepFrames = targetBufferedFrames + 1;
         while (queue.size() > keepFrames) {
-            AVFrame* droppedFrame = queue.front();
+            AVFrame* droppedFrame = queue.front().frame;
             queue.pop();
             recycleFrame(freeQueue, droppedFrame);
             framesDroppedStat++;
@@ -458,9 +470,9 @@ void AVFrameQueue::resetArrivalRateEstimatorLocked() {
 void AVFrameQueue::trimToPlayoutWindowLocked() {
     const size_t keepFrames = targetBufferedFrames + 1;
     while (queue.size() > keepFrames) {
-        AVFrame* droppedFrame = queue.front();
+        TimedFrame droppedFrame = queue.front();
         queue.pop();
-        recycleFrame(freeQueue, droppedFrame);
+        recycleFrame(freeQueue, droppedFrame.frame);
         framesDroppedStat++;
         pacingSkipStat++;
     }
@@ -496,7 +508,7 @@ void AVFrameQueue::cleanup() {
         av_frame_free(&bufferFrame);
     }
 
-    freeFrameQueue(queue);
+    freeTimedFrames(queue);
     freeFrameQueue(freeQueue);
     queue = {};
     freeQueue = {};

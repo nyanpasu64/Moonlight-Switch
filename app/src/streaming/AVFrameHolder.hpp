@@ -11,6 +11,13 @@ extern "C" {
 #include <libavcodec/avcodec.h>
 }
 
+using Timestamp = std::chrono::steady_clock::time_point;
+
+struct TimedFrame {
+    Timestamp readyTime;
+    AVFrame* frame;
+};
+
 class AVFrameQueue {
 public:
     explicit AVFrameQueue();
@@ -51,7 +58,7 @@ private:
     void resetArrivalRateEstimatorLocked();
     void trimToPlayoutWindowLocked();
     size_t limit = 0;
-    std::queue<AVFrame*> queue;
+    std::queue<TimedFrame> queue;
     std::queue<AVFrame*> freeQueue;
     AVFrame* bufferFrame = nullptr;
     bool transferOwnership = false;
