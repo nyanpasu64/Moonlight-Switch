@@ -438,11 +438,13 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         // TODO pick between stability and responsiveness
         output = timePredicted;
     } else {
+        // arrival.frameInterval is uninitialized while !arrival.rateComputed.
+        arrival.lastArrival = now;
         output = now;
     }
 
-    TracyPlot("arrivalInterval", arrival.frameInterval.count() / 1'000'000.);
-    TracyPlotConfig("arrivalInterval", tracy::PlotFormatType::Number, true, true, 0);
+    TracyPlot("arrival.frameInterval", arrival.frameInterval.count() / 1'000'000.);
+    TracyPlotConfig("arrival.frameInterval", tracy::PlotFormatType::Number, true, true, 0);
     TracyPlot("lastArrival", arrival.lastArrival.time_since_epoch().count() / 1'000'000.);
     TracyPlotConfig("lastArrival", tracy::PlotFormatType::Number, true, true, 0);
 
