@@ -8,6 +8,7 @@
 #include "AVFrameHolder.hpp"
 
 #include <algorithm>
+#include <tracy/Tracy.hpp>
 
 namespace {
 
@@ -124,6 +125,7 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         // of overdue video frames when drawing resumes.
         if (drawInterval <= std::chrono::nanoseconds::zero() ||
             drawInterval > std::chrono::milliseconds(250)) {
+            brls::Logger::info("invalid drawInterval, resyncing");
             draw.averageInterval = std::chrono::nanoseconds::zero();
             draw.frameCredit = 0.0;
             draw.resyncNeeded = true;
@@ -155,11 +157,13 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
     size_t dueFrames = 0;
     const bool backlogResync = limit > 0 && queue.size() >= limit;
     if ((draw.resyncNeeded || backlogResync) && !queue.empty()) {
+        brls::Logger::info("Processing draw.resyncNeeded");
         // Resume immediately after a real miss. If latency has reached the
         // hard limit, discard the stale backlog once instead of repeatedly
         // overflowing the oldest frame while playback remains frozen.
         trimToPlayoutWindowLocked();
         if (backlogResync) {
+            brls::Logger::info("overfull (backlogResync)");
             resetArrivalRateEstimatorLocked();
         }
         draw.resyncNeeded = false;
@@ -169,6 +173,7 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
     } else if (!arrival.rateComputed ||
                arrival.frameInterval <= std::chrono::nanoseconds::zero() ||
                draw.averageInterval <= std::chrono::nanoseconds::zero()) {
+        brls::Logger::info("!arrival.rateComputed");
         // During the short measurement warm-up, consume only above the jitter
         // reserve. This follows arrivals without assuming configured FPS is
         // the FPS the host is actually producing.
@@ -195,6 +200,8 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         }
     }
 
+    TracyPlot("pop", (int64_t)dueFrames);
+    TracyPlotConfig("pop", tracy::PlotFormatType::Number, true, true, 0);
     if (dueFrames == 0) {
         scheduledHoldStat++;
         return bufferFrame;
@@ -207,6 +214,7 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         }
         draw.frameCredit = 0.0;
         draw.resyncNeeded = true;
+        brls::Logger::info("buffer underflow");
         // The measured cadence may now be too high because the host FPS fell.
         // Relearn it from fresh arrivals while occupancy pacing protects the
         // jitter reserve, rather than causing repeated underflow/resume cycles.
@@ -215,6 +223,7 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
     }
 
     const size_t consumeCount = std::min(queue.size(), dueFrames);
+    TracyPlot("pop", (int64_t)consumeCount);
 
     recycleFrame(freeQueue, bufferFrame);
     for (size_t i = 0; i < consumeCount; i++) {
@@ -351,6 +360,7 @@ AVFrame* AVFrameQueue::acquireFrameLocked() {
 }
 
 bool AVFrameQueue::pushTransferredLocked(AVFrame* item) {
+    ZoneScoped;
     if (!item) {
         return false;
     }
@@ -383,7 +393,9 @@ constexpr double ALPHA = 1. / 3.;
 constexpr double BETA = ALPHA * ALPHA / (2. - ALPHA);
 
 Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
+    ZoneScoped;
     auto initArrival = [&]() {
+        ZoneScopedN("initArrival");
         arrival.windowStart = now;
         arrival.lastArrival = now;
         arrival.windowFrames = 1;
@@ -411,8 +423,10 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         // https://en.wikipedia.org/wiki/Alpha_beta_filter
         // (1)
         const Timestamp timePredicted = arrival.lastArrival + arrival.frameInterval;
+        TracyPlot("timePredicted", timePredicted.time_since_epoch().count() / 1'000'000.);
         // (3)
         const Duration residual = now - timePredicted;
+        TracyPlot("residual", residual.count() / 1'000'000.);
         // (4)
         const Timestamp smoothedNow = timePredicted + Duration((int64_t) ALPHA * residual.count());
         // (5)
@@ -427,6 +441,15 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         output = now;
     }
 
+    TracyPlot("arrivalInterval", arrival.frameInterval.count() / 1'000'000.);
+    TracyPlotConfig("arrivalInterval", tracy::PlotFormatType::Number, true, true, 0);
+    TracyPlot("lastArrival", arrival.lastArrival.time_since_epoch().count() / 1'000'000.);
+    TracyPlotConfig("lastArrival", tracy::PlotFormatType::Number, true, true, 0);
+
+    static const char * const RATE_COMPUTED = "rateComputed";
+    TracyPlot(RATE_COMPUTED, (long)arrival.rateComputed);
+    TracyPlotConfig(RATE_COMPUTED, tracy::PlotFormatType::Number, true, true, 0);
+
     const Duration elapsed = now - arrival.windowStart;
 
     // Periodically recompute stats.
@@ -435,6 +458,7 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
     }
 
     if (arrival.windowFrames > 1) {
+        brls::Logger::info("Computing stats...");
         // duration<double>() is measured in seconds: https://en.cppreference.com/cpp/chrono/duration
         const double elapsedSeconds =
             std::chrono::duration<double>(elapsed).count();
@@ -444,6 +468,7 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
 
         if (!arrival.rateComputed) {
             arrival.rateComputed = true;
+            TracyPlot(RATE_COMPUTED, (long)arrival.rateComputed);
 
             double sampleFps = static_cast<double>(arrival.windowFrames - 1) / elapsedSeconds;
             sampleFps = std::clamp(sampleFps, 1.0, maximumFps);
@@ -453,6 +478,7 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
             // (no left/both taper, but it's good enough for an initial guess.)
             arrival.frameInterval = std::chrono::nanoseconds(
                 static_cast<int64_t>(1000000000.0 / arrival.estimatedSourceFps));
+            brls::Logger::info("arrival.frameInterval := {}", arrival.frameInterval);
         } else {
             const double dSecPerFrame = arrival.frameInterval.count() / 1'000'000'000.;
 
@@ -479,6 +505,7 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         }
     }
 
+    brls::Logger::info("Next round of stats...");
     arrival.windowStart = now;
     arrival.windowFrames = 1;
     arrival.jitterSoFar = Duration::zero();
@@ -486,6 +513,7 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
 }
 
 void AVFrameQueue::resetArrivalRateEstimatorLocked() {
+    ZoneScoped;
     arrival = Arrival{};
 }
 
