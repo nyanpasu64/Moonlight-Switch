@@ -462,7 +462,9 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         output = now;
     }
 
-    TracyPlot("arrival.frameInterval", arrival.frameInterval.count() / 1'000'000.);
+    TracyPlot("arrival.frameInterval", arrival.rate
+            ? arrival.rate->frameInterval.count() / 1'000'000.
+            : 0.);
     TracyPlotConfig("arrival.frameInterval", tracy::PlotFormatType::Number, true, true, 0);
     TracyPlot("lastArrival", arrival.lastArrival.time_since_epoch().count() / 1'000'000.);
     TracyPlotConfig("lastArrival", tracy::PlotFormatType::Number, true, true, 0);
