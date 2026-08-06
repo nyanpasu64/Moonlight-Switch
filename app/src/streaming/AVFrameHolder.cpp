@@ -428,9 +428,9 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         const Duration residual = now - timePredicted;
         TracyPlot("residual", residual.count() / 1'000'000.);
         // (4)
-        const Timestamp smoothedNow = timePredicted + Duration((int64_t) ALPHA * residual.count());
+        const Timestamp smoothedNow = timePredicted + Duration((int64_t) (ALPHA * residual.count()));
         // (5)
-        arrival.frameInterval += Duration((int64_t) BETA * residual.count());
+        arrival.frameInterval += Duration((int64_t) (BETA * residual.count()));
 
         // The next iteration's step (1) takes *filter output*, not unfiltered now!
         arrival.lastArrival = smoothedNow;
