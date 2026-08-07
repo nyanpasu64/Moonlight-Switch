@@ -106,6 +106,8 @@ bool AVFrameQueue::pushTransferred(AVFrame* item) {
 }
 
 AVFrame* AVFrameQueue::pop(bool* consumed) {
+    FrameMarkNamed("pop and present frame");
+    ZoneScoped;
     std::lock_guard<std::mutex> lock(m_mutex);
 
     pushesSincePop = 0;
@@ -191,6 +193,7 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         TracyPlot("baseFramesPerDraw", baseFramesPerDraw);
         TracyPlot("queue.size()", (int64_t)queue.size());
 
+        TracyPlotConfig("time since queue[dueFrames].timeEstimate", tracy::PlotFormatType::Number, true, true, 0);
         for (; dueFrames < queue.size(); dueFrames++) {
             TracyPlot("time since queue[dueFrames].timeEstimate",
                 (now - queue[dueFrames].timeEstimate).count() / 1'000'000.);
@@ -220,14 +223,16 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         }
     }
 
-    TracyPlot("pop", (int64_t)dueFrames);
-    TracyPlotConfig("pop", tracy::PlotFormatType::Number, true, true, 0);
+    TracyPlotConfig("pop() consumed", tracy::PlotFormatType::Number, true, true, 0);
+    TracyPlot("pop() consumed", (int64_t)dueFrames);
+
+    const size_t consumeCount = std::min(queue.size(), dueFrames);
+    TracyPlot("pop() consumed", (int64_t)consumeCount);
+
     if (dueFrames == 0) {
         scheduledHoldStat++;
         return bufferFrame;
-    }
-
-    if (queue.empty()) {
+    } else if (queue.empty()) {
         if (bufferFrame) {
             fakeFrameUsedStat++;
             emptyQueueStat++;
@@ -241,9 +246,6 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         resetArrivalRateEstimatorLocked();
         return bufferFrame;
     }
-
-    const size_t consumeCount = std::min(queue.size(), dueFrames);
-    TracyPlot("pop", (int64_t)consumeCount);
 
     recycleFrame(freeQueue, bufferFrame);
     for (size_t i = 0; i < consumeCount; i++) {
@@ -422,6 +424,7 @@ constexpr double BETA = ALPHA * ALPHA / (2. - ALPHA) / 3.;
 constexpr double FAST_BETA = FAST_ALPHA * FAST_ALPHA / (2. - FAST_ALPHA) / 3.;
 
 Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
+    FrameMarkNamed("push decoded frame");
     ZoneScoped;
     auto initArrival = [&]() {
         ZoneScopedN("initArrival");
@@ -454,7 +457,7 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         // https://en.wikipedia.org/wiki/Alpha_beta_filter
         // (1)
         const Timestamp timePredicted = arrival.lastArrival + rate->frameInterval;
-        TracyPlot("timePredicted", timePredicted.time_since_epoch().count() / 1'000'000.);
+        // TracyPlot("timePredicted", timePredicted.time_since_epoch().count() / 1'000'000.);
         // (3)
         const Duration residual = now - timePredicted;
         TracyPlot("residual", residual.count() / 1'000'000.);
@@ -486,14 +489,15 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         output = now;
     }
 
+    TracyPlot("rate->jitter", arrival.rate ? arrival.rate->jitter.count() / 1'000'000. : 0.);
     TracyPlot("arrival.frameInterval", arrival.rate
             ? arrival.rate->frameInterval.count() / 1'000'000.
             : 0.);
     TracyPlotConfig("arrival.frameInterval", tracy::PlotFormatType::Number, true, true, 0);
-    TracyPlot("lastArrival", arrival.lastArrival.time_since_epoch().count() / 1'000'000.);
-    TracyPlotConfig("lastArrival", tracy::PlotFormatType::Number, true, true, 0);
+    // TracyPlot("lastArrival", arrival.lastArrival.time_since_epoch().count() / 1'000'000.);
+    // TracyPlotConfig("lastArrival", tracy::PlotFormatType::Number, true, true, 0);
 
-    static const char * const RATE_COMPUTED = "rate";
+    static const char * const RATE_COMPUTED = "rate.has_value()";
     TracyPlot(RATE_COMPUTED, (long)arrival.rate.has_value());
     TracyPlotConfig(RATE_COMPUTED, tracy::PlotFormatType::Number, true, true, 0);
 
