@@ -426,9 +426,13 @@ constexpr double ALPHA = 1. / 8.;
 constexpr double FAST_ALPHA = 1. / 4.;
 // https://www.oedigital.com/news/457127-applying-real-time-magnetic-declination-in-arctic-marine-seismic-acquisition
 
-// fudge factors yay
-constexpr double BETA = ALPHA * ALPHA / (2. - ALPHA) / 3.;
-constexpr double FAST_BETA = FAST_ALPHA * FAST_ALPHA / (2. - FAST_ALPHA) / 3.;
+constexpr double calc_beta(double alpha) {
+    // fudge factors yay
+    return alpha * alpha / (2. - alpha) / 3.;
+}
+// if we used different betas for early and late frames, then frame time jitter would
+// selectively increase frame time estimates, which is bad.
+constexpr double BETA = calc_beta(1. / 6.);
 
 Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
     FrameMarkNamed("push decoded frame");
@@ -472,8 +476,7 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         const double alpha = (residual > Duration()) ? FAST_ALPHA : ALPHA;
         const Timestamp smoothedNow = timePredicted + duration_cast<Duration>(alpha * residual);
         // (5)
-        const double beta = (residual > Duration()) ? FAST_BETA : BETA;
-        rate->frameInterval += duration_cast<Duration>(beta * residual);
+        rate->frameInterval += duration_cast<Duration>(BETA * residual);
 
         // The next iteration's step (1) takes *filter output*, not unfiltered now!
         arrival.lastArrival = smoothedNow;
