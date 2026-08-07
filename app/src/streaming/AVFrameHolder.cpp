@@ -94,7 +94,6 @@ bool AVFrameQueue::push(AVFrame* item) {
             overflowDropStat++;
         }
         resetArrivalRateEstimatorLocked();
-        draw.resyncNeeded = true;
     }
 
     return true;
@@ -245,7 +244,6 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             fakeFrameUsedStat++;
             emptyQueueStat++;
         }
-        draw.resyncNeeded = true;
         brls::Logger::info("buffer underflow");
         // The measured cadence may now be too high because the host FPS fell.
         // Relearn it from fresh arrivals while occupancy pacing protects the
@@ -413,7 +411,6 @@ bool AVFrameQueue::pushTransferredLocked(AVFrame* item) {
             overflowDropStat++;
         }
         resetArrivalRateEstimatorLocked();
-        draw.resyncNeeded = true;
     }
 
     return true;
@@ -571,6 +568,7 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
 void AVFrameQueue::resetArrivalRateEstimatorLocked() {
     ZoneScoped;
     arrival = Arrival{};
+    draw.resyncNeeded = true;
 }
 
 void AVFrameQueue::trimToPlayoutWindowLocked() {
