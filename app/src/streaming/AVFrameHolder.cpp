@@ -413,10 +413,13 @@ bool AVFrameQueue::pushTransferredLocked(AVFrame* item) {
 // https://en.wikipedia.org/wiki/Alpha_beta_filter
 // source: eyeballing "i want the time constant around 64 frames", https://alphaarchitect.com/trend-following-filters-part-2-2/#h-alpha-beta-gamma-position-tracking-filter-frequency-response-%CE%B1-0-3289-%CE%B2-0-0654-%CE%B3-0-0065
 constexpr double ALPHA = 1. / 8.;
-// source: pulled out of my ass
-constexpr double FAST_ALPHA = 2. / 3.;
+// observing latency spikes quickly will pass them to the viewer *before* the buffer runs dry. it's a tradeoff.
+constexpr double FAST_ALPHA = 1. / 4.;
 // https://www.oedigital.com/news/457127-applying-real-time-magnetic-declination-in-arctic-marine-seismic-acquisition
-constexpr double BETA = ALPHA * ALPHA / (2. - ALPHA);
+
+// fudge factors yay
+constexpr double BETA = ALPHA * ALPHA / (2. - ALPHA) / 3.;
+constexpr double FAST_BETA = FAST_ALPHA * FAST_ALPHA / (2. - FAST_ALPHA) / 3.;
 
 Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
     ZoneScoped;
@@ -443,11 +446,6 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         return initArrival();
     }
 
-    // Raise jitter to match spikes immediately, lower gradually.
-    if (auto & rate = arrival.rate) {
-        rate->jitter -= rate->jitter / 100;
-        rate->jitter = max(rate->jitter, abs(now - arrival.lastArrival - rate->frameInterval));
-    }
     arrival.windowFrames++;
 
     // Estimate smoothed time for frame pacing.
@@ -464,13 +462,24 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         const double alpha = (residual > Duration()) ? FAST_ALPHA : ALPHA;
         const Timestamp smoothedNow = timePredicted + duration_cast<Duration>(alpha * residual);
         // (5)
-        rate->frameInterval += duration_cast<Duration>(BETA * residual);
+        const double beta = (residual > Duration()) ? FAST_BETA : BETA;
+        rate->frameInterval += duration_cast<Duration>(beta * residual);
 
         // The next iteration's step (1) takes *filter output*, not unfiltered now!
         arrival.lastArrival = smoothedNow;
 
         // TODO pick between stability and responsiveness
         output = smoothedNow;
+
+        // Update jitter based on actual residual, not arrival.lastArrival (smoothed).
+        // Lower jitter gradually, but raise it to match spikes (interpolated to prevent sudden frame drops).
+        // If our frames are late, the next frame will probably be late and raise jitter too.
+        if (residual > rate->jitter) {
+            rate->jitter += (residual - rate->jitter) / 6;
+        } else {
+            rate->jitter -= rate->jitter / 100;
+        }
+
     } else {
         // arrival.frameInterval is uninitialized while !arrival.rateComputed.
         arrival.lastArrival = now;
