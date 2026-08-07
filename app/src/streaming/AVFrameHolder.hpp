@@ -97,9 +97,10 @@ private:
         std::chrono::steady_clock::time_point lastDraw{};
         std::chrono::nanoseconds averageInterval{0};
 
-        double frameCredit = 0.0;
         bool clockStarted = false;
         bool startupBuffering = true;
+
+        // Does not trigger a push underflow (which destroys arrival::rate), but is caused *by* it.
         bool resyncNeeded = true;
     } draw;
 

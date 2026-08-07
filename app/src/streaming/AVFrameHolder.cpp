@@ -131,7 +131,6 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             drawInterval > std::chrono::milliseconds(250)) {
             brls::Logger::info("invalid drawInterval, resyncing");
             draw.averageInterval = std::chrono::nanoseconds::zero();
-            draw.frameCredit = 0.0;
             draw.resyncNeeded = true;
         } else if (draw.averageInterval == std::chrono::nanoseconds::zero()) {
             draw.averageInterval = drawInterval;
@@ -154,7 +153,6 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         // whole reserve after every ordinary miss batches a variable-rate
         // source into visible freeze-and-catch-up cycles.
         draw.startupBuffering = false;
-        draw.frameCredit = 0.0;
         draw.resyncNeeded = true;
     }
 
@@ -171,7 +169,6 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             resetArrivalRateEstimatorLocked();
         }
         draw.resyncNeeded = false;
-        draw.frameCredit = 0.0;
         playoutResyncStat++;
         dueFrames = 1;
     } else if (!arrival.rate ||
@@ -194,6 +191,7 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         TracyPlot("queue.size()", (int64_t)queue.size());
 
         TracyPlotConfig("time since queue[dueFrames].timeEstimate", tracy::PlotFormatType::Number, true, true, 0);
+
         for (; dueFrames < queue.size(); dueFrames++) {
             TracyPlot("time since queue[dueFrames].timeEstimate",
                 (now - queue[dueFrames].timeEstimate).count() / 1'000'000.);
@@ -205,19 +203,29 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
 
             // We shouldn't skip frame 0 to a just-received frame 1, since the next
             // present may not have frame 2 ready, resulting in a duplicated frame.
-            const Timestamp safeArrivalTime = now - (2 * rate.jitter + std::chrono::milliseconds(4));  // the nx runs at 16.7 ms/frame
+
+            // rate.jitter is a filtered envelope follower (not averager). Boost it by
+            // 1.5 and add a minimum buffer to accommodate latency spikes.
+            const Timestamp safeArrivalTime = now -
+                (duration_cast<Duration>(1.5 * rate.jitter) + std::chrono::milliseconds(6));
             if (queue[dueFrames].timeEstimate > safeArrivalTime) {
                 break;
             }
         }
-        if (dueFrames == 0) {
-            // we intentionally leave frames buffered for at least
-            // (2 * rate.jitter + std::chrono::milliseconds(4)) past their expected
-            // (not actual) time, because they could be that much late and not constitute an error.
-            // we will give the same courtesy before declaring a frame missing.
-            const Timestamp frameExpectedBy = arrival.lastArrival + rate.frameInterval
-                + (2 * rate.jitter + std::chrono::milliseconds(4));
-            if (now > frameExpectedBy) {
+
+        // If we *have no frames* to present (not just choose to skip showing one)...
+        if (queue.size() == 0) {
+            // We expect a frame could arrive (1.5 * rate.jitter + 6 ms)
+            // late, and delay presenting on-time frames to the latest time we expect it to arrive.
+            //
+            // If no frames are available, wait for the next frame's expected *present
+            // time* (not arrival time) before declaring it missing.
+
+            const Timestamp nextFramePresentTime = arrival.lastArrival + rate.frameInterval +
+                (duration_cast<Duration>(1.5 * rate.jitter) + std::chrono::milliseconds(6));
+            if (now > nextFramePresentTime) {
+                // you may be tempted to move the `if (queue.empty())` early-exit here.
+                // this is a bad idea because it bypasses `TracyPlot("pop() consumed")`.
                 dueFrames = 1;
             }
         }
@@ -237,7 +245,6 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             fakeFrameUsedStat++;
             emptyQueueStat++;
         }
-        draw.frameCredit = 0.0;
         draw.resyncNeeded = true;
         brls::Logger::info("buffer underflow");
         // The measured cadence may now be too high because the host FPS fell.
@@ -489,13 +496,13 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         output = now;
     }
 
+    TracyPlotConfig("rate->jitter", tracy::PlotFormatType::Number, true, true, 0);
     TracyPlot("rate->jitter", arrival.rate ? arrival.rate->jitter.count() / 1'000'000. : 0.);
+
+    TracyPlotConfig("arrival.frameInterval", tracy::PlotFormatType::Number, true, true, 0);
     TracyPlot("arrival.frameInterval", arrival.rate
             ? arrival.rate->frameInterval.count() / 1'000'000.
             : 0.);
-    TracyPlotConfig("arrival.frameInterval", tracy::PlotFormatType::Number, true, true, 0);
-    // TracyPlot("lastArrival", arrival.lastArrival.time_since_epoch().count() / 1'000'000.);
-    // TracyPlotConfig("lastArrival", tracy::PlotFormatType::Number, true, true, 0);
 
     static const char * const RATE_COMPUTED = "rate.has_value()";
     TracyPlot(RATE_COMPUTED, (long)arrival.rate.has_value());
