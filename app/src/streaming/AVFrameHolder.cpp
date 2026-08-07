@@ -186,14 +186,24 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             static_cast<double>(draw.averageInterval.count()) /
             static_cast<double>(rate.frameInterval.count());
 
-        TracyPlot("baseFramesPerDraw", baseFramesPerDraw);
+        TracyPlot("pop#baseFramesPerDraw", baseFramesPerDraw);
         TracyPlot("queue.size()", (int64_t)queue.size());
 
-        TracyPlotConfig("time since queue[dueFrames].timeEstimate", tracy::PlotFormatType::Number, true, true, 0);
+        static constexpr char TIME_SINCE_FRAME[] = "time since frame decoded";
+        static constexpr char TIME_SINCE_SCHEDULED[] = "should frame be shown?";
+        TracyPlotConfig(TIME_SINCE_FRAME, tracy::PlotFormatType::Number, true, true, 0);
+        TracyPlotConfig(TIME_SINCE_SCHEDULED, tracy::PlotFormatType::Number, true, true, 0);
 
         for (; dueFrames < queue.size(); dueFrames++) {
-            TracyPlot("time since queue[dueFrames].timeEstimate",
-                (now - queue[dueFrames].timeEstimate).count() / 1'000'000.);
+            const Timestamp frameTime = queue[dueFrames].timeEstimate;
+
+            // rate.jitter is a filtered envelope follower (not averager). Boost it by
+            // 1.5 and add a minimum buffer to accommodate latency spikes.
+            const Timestamp presentTime = frameTime +
+                (duration_cast<Duration>(1.5 * rate.jitter) + std::chrono::milliseconds(6));
+
+            TracyPlot(TIME_SINCE_FRAME, (now - frameTime).count() / 1'000'000.);
+            TracyPlot(TIME_SINCE_SCHEDULED, (now - presentTime).count() / 1'000'000.);
 
             // Always show at least 1 frame if the server isn't slow.
             if (baseFramesPerDraw >= 0.98 && dueFrames <= 0) {
@@ -201,13 +211,8 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             }
 
             // We shouldn't skip frame 0 to a just-received frame 1, since the next
-            // present may not have frame 2 ready, resulting in a duplicated frame.
-
-            // rate.jitter is a filtered envelope follower (not averager). Boost it by
-            // 1.5 and add a minimum buffer to accommodate latency spikes.
-            const Timestamp safeArrivalTime = now -
-                (duration_cast<Duration>(1.5 * rate.jitter) + std::chrono::milliseconds(6));
-            if (queue[dueFrames].timeEstimate > safeArrivalTime) {
+            // present may not have frame 2 decoded, resulting in a duplicated frame.
+            if (presentTime > now) {
                 break;
             }
         }
@@ -219,10 +224,21 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             //
             // If no frames are available, wait for the next frame's expected *present
             // time* (not arrival time) before declaring it missing.
-
-            const Timestamp nextFramePresentTime = arrival.lastArrival + rate.frameInterval +
+            const Timestamp frameTime = arrival.lastArrival + rate.frameInterval;
+            const Timestamp presentTime = frameTime +
                 (duration_cast<Duration>(1.5 * rate.jitter) + std::chrono::milliseconds(6));
-            if (now > nextFramePresentTime) {
+
+            TracyPlot(TIME_SINCE_FRAME, (now - frameTime).count() / 1'000'000.);
+            // present day... present time! hahahahahahah-
+            TracyPlot(TIME_SINCE_SCHEDULED, (now - presentTime).count() / 1'000'000.);
+
+            // We *could* add `if (baseFramesPerDraw >= 0.98) dueframes = 1` because it
+            // would be presented if it existed... but I chose to let dropped frames
+            // slip if their present time is in the future (to avoid declaring underflow
+            // when not absolutely necessary), at the cost of slightly unintuitive
+            // behavior when staring at debug plots.
+            if (now > presentTime) {
+                // Declare a missing frame.
                 // you may be tempted to move the `if (queue.empty())` early-exit here.
                 // this is a bad idea because it bypasses `TracyPlot("pop() consumed")`.
                 dueFrames = 1;
@@ -459,6 +475,9 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
 
     arrival.windowFrames++;
 
+    // Initialize the plot in the same order as other push plots.
+    TracyPlotConfig("push#residual", tracy::PlotFormatType::Number, true, true, 0);
+
     // Estimate smoothed time for frame pacing.
     Timestamp output;
     if (auto & rate = arrival.rate) {
@@ -468,7 +487,7 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         // TracyPlot("timePredicted", timePredicted.time_since_epoch().count() / 1'000'000.);
         // (3)
         const Duration residual = now - timePredicted;
-        TracyPlot("residual", residual.count() / 1'000'000.);
+        TracyPlot("push#residual", residual.count() / 1'000'000.);
         // (4) tell the truth if frame late, smooth over if frame early
         const double alpha = (residual > Duration()) ? FAST_ALPHA : ALPHA;
         const Timestamp smoothedNow = timePredicted + duration_cast<Duration>(alpha * residual);

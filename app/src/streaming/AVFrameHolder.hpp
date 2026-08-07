@@ -100,7 +100,8 @@ private:
         bool clockStarted = false;
         bool startupBuffering = true;
 
-        // Does not trigger a push underflow (which destroys arrival::rate), but is caused *by* it.
+        // Does not trigger a push underflow (which destroys arrival::rate), but we also
+        // call resetArrivalRateEstimatorLocked(), which does.
         bool resyncNeeded = true;
     } draw;
 
