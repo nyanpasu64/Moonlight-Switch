@@ -177,6 +177,13 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         // During the short measurement warm-up, consume only above the jitter
         // reserve. This follows arrivals without assuming configured FPS is
         // the FPS the host is actually producing.
+
+        // (nyanpasu64) I *would* consume the last frame and ignore targetBufferedFrames
+        // altogether, which reduces latency in resync following a frame drop... but if
+        // the final frame of training comes early (-> arrival.lastArrival), we could
+        // start rate-following on an empty buffer *and* predict frames should arrive
+        // before they do, triggering an immediate second resync. I have *ideas* on how
+        // to better initialize arrival.lastArrival, but none obviously good.
         dueFrames = queue.size() > targetBufferedFrames ? 1 : 0;
     } else if (arrival.rate->frameInterval > std::chrono::nanoseconds::zero() &&
                draw.averageInterval > std::chrono::nanoseconds::zero()) {
@@ -189,9 +196,9 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         TracyPlot("pop#baseFramesPerDraw", baseFramesPerDraw);
         TracyPlot("queue.size()", (int64_t)queue.size());
 
-        static constexpr char TIME_SINCE_FRAME[] = "time since frame decoded";
+        // static constexpr char TIME_SINCE_FRAME[] = "time since frame decoded";
         static constexpr char TIME_SINCE_SCHEDULED[] = "should frame be shown?";
-        TracyPlotConfig(TIME_SINCE_FRAME, tracy::PlotFormatType::Number, true, true, 0);
+        // TracyPlotConfig(TIME_SINCE_FRAME, tracy::PlotFormatType::Number, true, true, 0);
         TracyPlotConfig(TIME_SINCE_SCHEDULED, tracy::PlotFormatType::Number, true, true, 0);
 
         for (; dueFrames < queue.size(); dueFrames++) {
@@ -202,7 +209,7 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             const Timestamp presentTime = frameTime +
                 (duration_cast<Duration>(1.5 * rate.jitter) + std::chrono::milliseconds(6));
 
-            TracyPlot(TIME_SINCE_FRAME, (now - frameTime).count() / 1'000'000.);
+            // TracyPlot(TIME_SINCE_FRAME, (now - frameTime).count() / 1'000'000.);
             TracyPlot(TIME_SINCE_SCHEDULED, (now - presentTime).count() / 1'000'000.);
 
             // Always show at least 1 frame if the server isn't slow.
@@ -228,7 +235,7 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             const Timestamp presentTime = frameTime +
                 (duration_cast<Duration>(1.5 * rate.jitter) + std::chrono::milliseconds(6));
 
-            TracyPlot(TIME_SINCE_FRAME, (now - frameTime).count() / 1'000'000.);
+            // TracyPlot(TIME_SINCE_FRAME, (now - frameTime).count() / 1'000'000.);
             // present day... present time! hahahahahahah-
             TracyPlot(TIME_SINCE_SCHEDULED, (now - presentTime).count() / 1'000'000.);
 
@@ -510,7 +517,7 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         }
 
     } else {
-        // arrival.frameInterval is uninitialized while !arrival.rateComputed.
+        // arrival.frameInterval is uninitialized while !arrival.rate.
         arrival.lastArrival = now;
         output = now;
     }
