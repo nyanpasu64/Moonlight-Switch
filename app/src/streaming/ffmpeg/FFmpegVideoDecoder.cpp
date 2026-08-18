@@ -840,8 +840,9 @@ int FFmpegVideoDecoder::submit_decode_unit(PDECODE_UNIT decode_unit) {
 
         }
         else {
+            brls::Logger::error("corrupted packet of length {}", length);
             if (MoonlightSession::activeSession() != nullptr)
-                MoonlightSession::activeSession()->restart();
+                MoonlightSession::activeSession()->scheduleRestart();
         }
     } else {
         brls::Logger::error("FFmpeg: Big buffer to decode... 2");
