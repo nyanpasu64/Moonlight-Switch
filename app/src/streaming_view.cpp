@@ -82,6 +82,12 @@ StreamingView::StreamingView(const Host& host, const AppInfo& app) : host(host),
 
     session = new MoonlightSession(host.preferred_address(), app.app_id);
 
+    // End the stream when the app is backgrounded, to prevent crashes when sleeping or
+    // opening applets.
+    windowFocusSubscription =
+        Application::getWindowFocusChangedEvent()->subscribe(
+            [this](bool focused) { this->onWindowFocusChanged(focused); });
+
 #ifdef PLATFORM_TVOS
         updatePreferredDisplayMode(true);
 #endif
@@ -286,6 +292,17 @@ void StreamingView::onFocusLost() {
 
 void StreamingView::draw(NVGcontext* vg, float x, float y, float width,
                          float height, Style style, FrameContext* ctx) {
+    if (pendingSuspendTerminate) {
+        // Focus was lost. Safe to tear down here: this is the main loop, not
+        // an event callback, so dismissing the view cannot invalidate an
+        // iteration in progress. When the loss was a console sleep this runs
+        // on the first frame after waking, which is also the first moment the
+        // graphics service is back.
+        pendingSuspendTerminate = false;
+        terminate(false);
+        return;
+    }
+
     if (session->is_terminated()) {
         terminate(false);
         return;
@@ -419,6 +436,25 @@ void StreamingView::removeKeyboard() {
     keyboard->removeFromSuperView();
     keyboard = nullptr;
     Application::giveFocus(this);
+}
+
+void StreamingView::onWindowFocusChanged(bool focused) {
+    if (focused || terminated)
+        return;
+
+    // Losing focus on Switch means the console is going to sleep or the HOME
+    // menu has taken over. Moonlight on Android ends the session at the
+    // equivalent point (Game.onStop calls stopConnection then finish), and
+    // this matches it: end the stream and fall back to the host list rather
+    // than carrying decoder and GPU state across a suspend.
+    //
+    // Nothing destructive happens here. This runs inside
+    // Event<bool>::fire, which is iterating its own callback list, and
+    // terminate() would dismiss this view and unsubscribe from inside that
+    // iteration. Record the intent; draw() acts on it.
+    Logger::info("StreamingView: focus lost, will end the stream");
+    MoonlightInputManager::instance().dropInput();
+    pendingSuspendTerminate = true;
 }
 
 void StreamingView::terminate(bool terminateApp) {
@@ -594,6 +630,8 @@ StreamingView::~StreamingView() {
         ->getInputManager()
         ->getKeyboardKeyStateChanged()
         ->unsubscribe(keysSubscription);
+    Application::getWindowFocusChangedEvent()->unsubscribe(
+        windowFocusSubscription);
     session->stop(false);
     delete session;
 }
