@@ -37,7 +37,7 @@ Or download it from [HB App Store](https://apps.fortheusers.org/switch/Moonlight
 Accept [invite for TestFlight](https://testflight.apple.com/join/P9EX5vQ5) and download app from there
 
 ## Discord
-Feel free to join [Moonlight discord server](https://discord.gg/fmtcVPzaG4), you will find me there in "switch-help" channel 
+Feel free to join [Moonlight discord server](https://discord.gg/fmtcVPzaG4), you will find me there in "switch-help" channel
 
 ## Controls
 ### Mouse
@@ -141,6 +141,7 @@ cd Moonlight-Switch
 To build for Switch, a standard development environment must first be set up. In order to do so, [refer to the Getting Started guide](https://devkitpro.org/wiki/Getting_Started).
 
 ```bash
+sudo pacman -S --needed switch-jansson switch-libexpat switch-libopus switch-libzstd switch-glm switch-dav1d
 cmake -B build/switch -DPLATFORM_SWITCH=ON
 make -C build/switch Moonlight.nro -j$(nproc)
 ```
@@ -294,9 +295,9 @@ open build/tvos/*.xcodeproj
 ## Credits
 Thanks a lot to [Rock88](https://github.com/rock88) and his [Moonlight-NX](https://github.com/rock88/moonlight-nx), lots of streaming code has been lend from it 👍.
 
-[Xfangfang](https://github.com/xfangfang) for maintaining [Borealis](https://github.com/xfangfang/borealis) library. iOS port would not be possible without it. 
+[Xfangfang](https://github.com/xfangfang) for maintaining [Borealis](https://github.com/xfangfang/borealis) library. iOS port would not be possible without it.
 
-[Averne](https://github.com/averne) for NVDEC implementation into [FFmpeg](https://github.com/averne/FFmpeg) and useful guidance of how to enable it 
+[Averne](https://github.com/averne) for NVDEC implementation into [FFmpeg](https://github.com/averne/FFmpeg) and useful guidance of how to enable it
 
 Also huge thanks to [Cooler3D](https://github.com/Cooler3Ds) for help with Deko3D implementation and solving performance issues
 
