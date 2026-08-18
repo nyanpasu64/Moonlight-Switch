@@ -185,13 +185,16 @@ void MoonlightSession::video_decoder_start() {
 
 void MoonlightSession::video_decoder_stop() {
     if (m_active_session && m_active_session->m_video_decoder) {
-        m_active_session->m_video_decoder->stop();
+        m_active_session->m_video_decoder->stop();  // no-op
     }
 }
 
 void MoonlightSession::video_decoder_cleanup() {
     if (m_active_session && m_active_session->m_video_decoder) {
         m_active_session->m_video_decoder->cleanup();
+    }
+    if (m_active_session && m_active_session->m_video_renderer) {
+        m_active_session->m_video_renderer->invalidateHardwareResources();
     }
 }
 

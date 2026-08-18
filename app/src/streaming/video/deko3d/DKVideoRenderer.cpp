@@ -1057,6 +1057,22 @@ void DKVideoRenderer::updateFrameMapping(AVFrame* frame) {
     queue.submitCommands(updateCmdMemRing.end(updateCmdbuf));
 }
 
+void DKVideoRenderer::invalidateHardwareResources() {
+    if (!m_is_initialized) {
+        return;
+    }
+
+    // frameMappings wraps buffers owned by the NVTEGRA decoder pool, keyed by the nvmap
+    // handle and CPU address they had when they were mapped. If a session disconnects
+    // and reconnects (calling FFmpegVideoDecoder::cleanup()) without being destroyed,
+    // an entry can appear valid but crash with an orange screen when used. Drop every
+    // mapping (matching updateRenderState() when the frame size changes), and let
+    // updateFrameMapping() rebuild the one the next frame actually needs.
+    queue.waitIdle();
+    frameMappings.clear();
+    currentMappingIndex = -1;
+}
+
 void DKVideoRenderer::releaseImageSlots() {
     if (!vctx) {
         return;

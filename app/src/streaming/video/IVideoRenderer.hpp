@@ -41,6 +41,13 @@ class IVideoRenderer {
                       AVFrame* frame, int imageFormat) = 0;
     virtual VideoRenderStats* video_render_stats() = 0;
 
+    // Called after the app has been out of focus, which on Switch covers a
+    // console sleep/resume cycle. The graphics and decoder services can be
+    // reinitialised underneath any mapping a renderer holds into memory it
+    // does not own, so a renderer caching such mappings must drop them here
+    // and remap from the next frame it is given.
+    virtual void invalidateHardwareResources() {}
+
     // Default implementations
     virtual int getDecoderColorspace() {
         // Rec 601 is default
