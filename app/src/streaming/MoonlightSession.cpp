@@ -5,6 +5,7 @@
 #include "Settings.hpp"
 #include "borealis.hpp"
 #include <string.h>
+#include <tracy/Tracy.hpp>
 
 #if defined(PLATFORM_IOS) || defined(PLATFORM_VISIONOS)
 extern void getWindowSize(int* w, int* h);
@@ -27,6 +28,8 @@ void MoonlightSession::set_provider(
 }
 
 MoonlightSession::MoonlightSession(const std::string& address, int app_id) {
+    ZoneScoped;
+    ZoneTextF("{ this = %p", this);
     m_address = address;
     m_app_id = app_id;
     m_active_session = this;
@@ -37,6 +40,8 @@ MoonlightSession::MoonlightSession(const std::string& address, int app_id) {
 }
 
 MoonlightSession::~MoonlightSession() {
+    ZoneScoped;
+    ZoneTextF("} this = %p", this);
     if (m_video_decoder) {
         delete m_video_decoder;
     }
@@ -80,6 +85,7 @@ void MoonlightSession::connection_stage_failed(int stage, int error_code) {
 }
 
 void MoonlightSession::connection_started() {
+    ZoneScoped;
     brls::Logger::info("MoonlightSession: Connection started");
     if (!m_active_session)
         return;
@@ -89,6 +95,7 @@ void MoonlightSession::connection_started() {
 }
 
 void MoonlightSession::connection_terminated(int error_code) {
+    ZoneScoped;
     brls::Logger::info("MoonlightSession: Connection terminated with code: {}", error_code);
 
     if (!m_active_session)
@@ -100,6 +107,7 @@ void MoonlightSession::connection_terminated(int error_code) {
         return;
     }
 
+    ZoneTextF("m_status = %d", m_active_session->m_status);
     if (error_code != 0 && m_active_session->m_status <= Status::Active) {
         m_active_session->scheduleRestart();
         return;
@@ -127,11 +135,11 @@ void MoonlightSession::connection_rumble(unsigned short controller,
 }
 
 
-void MoonlightSession::connection_rumble_triggers(uint16_t controllerNumber, 
-                                                  uint16_t leftTriggerMotor, 
-                                                  uint16_t rightTriggerMotor) 
+void MoonlightSession::connection_rumble_triggers(uint16_t controllerNumber,
+                                                  uint16_t leftTriggerMotor,
+                                                  uint16_t rightTriggerMotor)
 {
-    // MoonlightInputManager::instance().handleRumbleTriggers(controllerNumber, leftTriggerMotor, rightTriggerMotor);                                                
+    // MoonlightInputManager::instance().handleRumbleTriggers(controllerNumber, leftTriggerMotor, rightTriggerMotor);
 }
 
 void MoonlightSession::connection_status_update(int connection_status) {
@@ -173,6 +181,7 @@ void MoonlightSession::video_decoder_stop() {
 }
 
 void MoonlightSession::video_decoder_cleanup() {
+    ZoneScoped;
     if (m_active_session && m_active_session->m_video_decoder) {
         m_active_session->m_video_decoder->cleanup();
     }
@@ -183,6 +192,7 @@ void MoonlightSession::video_decoder_cleanup() {
 
 int MoonlightSession::video_decoder_submit_decode_unit(
     PDECODE_UNIT decode_unit) {
+    ZoneScoped;
     if (m_active_session && m_active_session->m_video_decoder) {
         return m_active_session->m_video_decoder->submit_decode_unit(
             decode_unit);
@@ -231,6 +241,7 @@ void MoonlightSession::audio_renderer_decode_and_play_sample(
 // MARK: MoonlightSession
 
 void MoonlightSession::start(ServerCallback<bool> callback, bool is_sunshine) {
+    ZoneScoped;
     m_is_sunshine = is_sunshine;
     m_stop_requested = false;
     m_status = Status::None;
@@ -328,9 +339,11 @@ void MoonlightSession::start(ServerCallback<bool> callback, bool is_sunshine) {
 
     GameStreamClient::instance().start(
         m_address, m_config, m_app_id, [this, callback](auto result) {
+            ZoneScopedN("GameStreamClient::instance().start()#cb");
             if (result.isSuccess()) {
                 m_config = result.value();
                 brls::async([this, callback]() mutable {
+                    ZoneScopedN("GameStreamClient::instance().start()#cb2");
                     auto m_data =
                         GameStreamClient::instance().server_data(m_address);
 
@@ -356,6 +369,7 @@ void MoonlightSession::start(ServerCallback<bool> callback, bool is_sunshine) {
 }
 
 void MoonlightSession::stop(int terminate_app) {
+    ZoneScoped;
     if (m_stop_requested)
         return;
 
@@ -369,6 +383,7 @@ void MoonlightSession::stop(int terminate_app) {
 }
 
 void MoonlightSession::scheduleRestart() {
+    ZoneScoped;
     brls::Logger::info("MoonlightSession: Scheduling reconnection attempt");
     m_active_session->m_status = Status::TerminateAndRestart;
 }

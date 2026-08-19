@@ -37,6 +37,8 @@ unsigned int sceLibcHeapSize             = 24 * 1024 * 1024;
 #include "MoonlightSession.hpp"
 #include "SwitchMoonlightSessionDecoderAndRenderProvider.hpp"
 
+#include <tracy/Tracy.hpp>
+
 
 #if defined(_WIN32) && defined(__SDL2__)
 #include <SDL.h>
@@ -91,6 +93,7 @@ void preferSwitchCore(int ordinal) {
 #endif
 
 int main(int argc, char* argv[]) {
+    tracy::StartupProfiler();
     // Enable recording for Twitter memes
 #ifdef __SWITCH__
     appletInitializeGamePlayRecording();
@@ -124,6 +127,11 @@ int main(int argc, char* argv[]) {
     }
 
     registerDeepLinkHandler();
+
+    nxlinkStdio();
+    brls::Logger::getLogEvent()->subscribe([](Logger::TimePoint now, LogLevel level, const std::string& log) {
+        TracyMessage(log.c_str(), log.size());
+    });
 
 #if defined(PLATFORM_VISIONOS)
     brls::Application::setMaximumUIScale(1.0f);
@@ -186,10 +194,12 @@ int main(int argc, char* argv[]) {
 #endif
     }
 
+    tracy::ShutdownProfiler();
+
     // Exit
 #if defined(PLATFORM_TVOS)
     exit(0);
 #endif
-    
+
     return EXIT_SUCCESS;
 }

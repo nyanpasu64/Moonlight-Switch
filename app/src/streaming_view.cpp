@@ -17,6 +17,7 @@
 #include "ingame_overlay_view.hpp"
 #include "streaming_input_overlay.hpp"
 #include "two_finger_scroll_recognizer.hpp"
+#include <tracy/Tracy.hpp>
 #include <Limelight.h>
 #include <chrono>
 #include <nanovg.h>
@@ -49,7 +50,7 @@ void overrideButtonsIfNeeded(bool value) {
         case ButtonOverrideType::NONE: break;
         case ButtonOverrideType::HOME:
             ((SwitchInputManager*) brls::Application::getPlatform()->getInputManager())->setHomeButtonOverrideMode(ButtonOverrideMode::CUSTOM_EVENT);
-            break;  
+            break;
         case ButtonOverrideType::SCREENSHOT:
             ((SwitchInputManager*) brls::Application::getPlatform()->getInputManager())->setScreenshotButtonOverrideMode(ButtonOverrideMode::CUSTOM_EVENT);
             break;
@@ -59,7 +60,7 @@ void overrideButtonsIfNeeded(bool value) {
         case ButtonOverrideType::NONE: break;
         case ButtonOverrideType::HOME:
             ((SwitchInputManager*) brls::Application::getPlatform()->getInputManager())->setHomeButtonOverrideMode(ButtonOverrideMode::GUIDE_BUTTON);
-            break;  
+            break;
         case ButtonOverrideType::SCREENSHOT:
             ((SwitchInputManager*) brls::Application::getPlatform()->getInputManager())->setScreenshotButtonOverrideMode(ButtonOverrideMode::GUIDE_BUTTON);
             break;
@@ -68,6 +69,7 @@ void overrideButtonsIfNeeded(bool value) {
 }
 
 StreamingView::StreamingView(const Host& host, const AppInfo& app) : host(host), app(app) {
+    ZoneScoped;
     Application::getPlatform()->disableScreenDimming(true);
 
     setFocusable(true);
@@ -96,6 +98,7 @@ StreamingView::StreamingView(const Host& host, const AppInfo& app) : host(host),
     GameStreamClient::instance().connect(
         host, [ASYNC_TOKEN](GSResult<SERVER_DATA> result) {
             ASYNC_RELEASE
+            ZoneScopedN("GameStreamClient::instance().connect()#cb");
             if (!result.isSuccess()) {
                 showError(result.error(), [this]() { terminate(false); });
                 return;
@@ -107,6 +110,7 @@ StreamingView::StreamingView(const Host& host, const AppInfo& app) : host(host),
             ASYNC_RETAIN
             session->start([ASYNC_TOKEN](GSResult<bool> result) {
                 ASYNC_RELEASE
+                ZoneScopedN("session->start()#cb");
 
                 loader->setHidden(true);
                 if (!result.isSuccess()) {
@@ -391,6 +395,7 @@ void StreamingView::draw(NVGcontext* vg, float x, float y, float width,
                                   "Scheduled frame holds: {}\n"
                                   "Frames presented by local clock: {}\n"
                                   "Playout resyncs | estimated source: {} | {:.2f} FPS\n"
+                                  "Framerate jitter: {}\n"
                                   "Max pushes between draws: {}\n"
                                   "Frames queue depth | target | capacity: {} | {} | {}",
                                   AVFrameHolder::instance().getFakeFrameStat(),
@@ -403,6 +408,7 @@ void StreamingView::draw(NVGcontext* vg, float x, float y, float width,
                                   AVFrameHolder::instance().getFrameQueueLocalClockPacedFrameStat(),
                                   AVFrameHolder::instance().getFrameQueuePlayoutResyncStat(),
                                   AVFrameHolder::instance().getFrameQueueEstimatedSourceFps(),
+                                  AVFrameHolder::instance().getFrameQueueJitterMs(),
                                   AVFrameHolder::instance().getFrameQueueMaxPushBurstStat(),
                                   AVFrameHolder::instance().getFrameQueueSize(),
                                   AVFrameHolder::instance().getFrameQueueTargetDepth(),
@@ -461,6 +467,7 @@ void StreamingView::onWindowFocusChanged(bool focused) {
 }
 
 void StreamingView::terminate(bool terminateApp) {
+    ZoneScoped;
     if (terminated)
         return;
     terminated = true;
@@ -624,10 +631,11 @@ void StreamingView::onLayout() {
 }
 
 StreamingView::~StreamingView() {
+    ZoneScoped;
 #ifdef PLATFORM_TVOS
     updatePreferredDisplayMode(false);
 #endif
-    
+
     Application::getPlatform()->disableScreenDimming(false);
     Application::getPlatform()
         ->getInputManager()

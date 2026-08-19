@@ -8,6 +8,7 @@
 #include "AVFrameHolder.hpp"
 
 #include <algorithm>
+#include <tracy/Tracy.hpp>
 
 using std::chrono::duration_cast;
 
@@ -104,6 +105,8 @@ bool AVFrameQueue::pushTransferred(AVFrame* item) {
 }
 
 AVFrame* AVFrameQueue::pop(bool* consumed) {
+    FrameMarkNamed("pop and present frame");
+    ZoneScoped;
     std::lock_guard<std::mutex> lock(m_mutex);
 
     pushesSincePop = 0;
@@ -125,6 +128,7 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         // of overdue video frames when drawing resumes.
         if (drawInterval <= std::chrono::nanoseconds::zero() ||
             drawInterval > std::chrono::milliseconds(250)) {
+            brls::Logger::info("invalid drawInterval, resyncing");
             draw.averageInterval = std::chrono::nanoseconds::zero();
             draw.resyncNeeded = true;
         } else if (draw.averageInterval == std::chrono::nanoseconds::zero()) {
@@ -154,11 +158,13 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
     size_t dueFrames = 0;
     const bool backlogResync = limit > 0 && queue.size() >= limit;
     if ((draw.resyncNeeded || backlogResync) && !queue.empty()) {
+        brls::Logger::info("Processing draw.resyncNeeded");
         // Resume immediately after a real miss. If latency has reached the
         // hard limit, discard the stale backlog once instead of repeatedly
         // overflowing the oldest frame while playback remains frozen.
         trimToPlayoutWindowLocked();
         if (backlogResync) {
+            brls::Logger::info("overfull (backlogResync)");
             resetArrivalRateEstimatorLocked();
         }
         draw.resyncNeeded = false;
@@ -167,6 +173,7 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
     } else if (!arrival.rate ||
                arrival.rate->frameInterval <= std::chrono::nanoseconds::zero() ||
                draw.averageInterval <= std::chrono::nanoseconds::zero()) {
+        brls::Logger::info("!arrival.rateComputed");
         // During the short measurement warm-up, consume only above the jitter
         // reserve. This follows arrivals without assuming configured FPS is
         // the FPS the host is actually producing.
@@ -186,6 +193,14 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             static_cast<double>(draw.averageInterval.count()) /
             static_cast<double>(rate.frameInterval.count());
 
+        TracyPlot("pop#baseFramesPerDraw", baseFramesPerDraw);
+        TracyPlot("queue.size()", (int64_t)queue.size());
+
+        // static constexpr char TIME_SINCE_FRAME[] = "time since frame decoded";
+        static constexpr char TIME_SINCE_SCHEDULED[] = "should frame be shown?";
+        // TracyPlotConfig(TIME_SINCE_FRAME, tracy::PlotFormatType::Number, true, true, 0);
+        TracyPlotConfig(TIME_SINCE_SCHEDULED, tracy::PlotFormatType::Number, true, true, 0);
+
         for (; dueFrames < queue.size(); dueFrames++) {
             const Timestamp frameTime = queue[dueFrames].timeEstimate;
 
@@ -193,6 +208,9 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             // 1.5 and add a minimum buffer to accommodate latency spikes.
             const Timestamp presentTime = frameTime +
                 (duration_cast<Duration>(1.5 * rate.jitter) + std::chrono::milliseconds(6));
+
+            // TracyPlot(TIME_SINCE_FRAME, (now - frameTime).count() / 1'000'000.);
+            TracyPlot(TIME_SINCE_SCHEDULED, (now - presentTime).count() / 1'000'000.);
 
             // Always show at least 1 frame if the server isn't slow.
             if (baseFramesPerDraw >= 0.98 && dueFrames <= 0) {
@@ -217,6 +235,10 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             const Timestamp presentTime = frameTime +
                 (duration_cast<Duration>(1.5 * rate.jitter) + std::chrono::milliseconds(6));
 
+            // TracyPlot(TIME_SINCE_FRAME, (now - frameTime).count() / 1'000'000.);
+            // present day... present time! hahahahahahah-
+            TracyPlot(TIME_SINCE_SCHEDULED, (now - presentTime).count() / 1'000'000.);
+
             // We *could* add `if (baseFramesPerDraw >= 0.98) dueframes = 1` because it
             // would be presented if it existed... but I chose to let dropped frames
             // slip if their present time is in the future (to avoid declaring underflow
@@ -231,6 +253,12 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         }
     }
 
+    TracyPlotConfig("pop() consumed", tracy::PlotFormatType::Number, true, true, 0);
+    TracyPlot("pop() consumed", (int64_t)dueFrames);
+
+    const size_t consumeCount = std::min(queue.size(), dueFrames);
+    TracyPlot("pop() consumed", (int64_t)consumeCount);
+
     if (dueFrames == 0) {
         scheduledHoldStat++;
         return bufferFrame;
@@ -239,6 +267,7 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             fakeFrameUsedStat++;
             emptyQueueStat++;
         }
+        brls::Logger::info("buffer underflow");
         // The measured cadence may now be too high because the host FPS fell.
         // Relearn it from fresh arrivals while occupancy pacing protects the
         // jitter reserve, rather than causing repeated underflow/resume cycles.
@@ -259,6 +288,8 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
             bufferFrame = item.frame;
         }
     }
+
+    TracyPlot("queue.size()", (int64_t)queue.size());
 
     if (consumed) {
         *consumed = true;
@@ -383,6 +414,7 @@ AVFrame* AVFrameQueue::acquireFrameLocked() {
 }
 
 bool AVFrameQueue::pushTransferredLocked(AVFrame* item) {
+    ZoneScoped;
     if (!item) {
         return false;
     }
@@ -423,7 +455,10 @@ constexpr double calc_beta(double alpha) {
 constexpr double BETA = calc_beta(1. / 6.);
 
 Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
+    FrameMarkNamed("push decoded frame");
+    ZoneScoped;
     auto initArrival = [&]() {
+        ZoneScopedN("initArrival");
         arrival.windowStart = now;
         arrival.lastArrival = now;
         arrival.windowFrames = 1;
@@ -447,14 +482,19 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
 
     arrival.windowFrames++;
 
+    // Initialize the plot in the same order as other push plots.
+    TracyPlotConfig("push#residual", tracy::PlotFormatType::Number, true, true, 0);
+
     // Estimate smoothed time for frame pacing.
     Timestamp output;
     if (auto & rate = arrival.rate) {
         // https://en.wikipedia.org/wiki/Alpha_beta_filter
         // (1)
         const Timestamp timePredicted = arrival.lastArrival + rate->frameInterval;
+        // TracyPlot("timePredicted", timePredicted.time_since_epoch().count() / 1'000'000.);
         // (3)
         const Duration residual = now - timePredicted;
+        TracyPlot("push#residual", residual.count() / 1'000'000.);
         // (4) tell the truth if frame late, smooth over if frame early
         const double alpha = (residual > Duration()) ? FAST_ALPHA : ALPHA;
         const Timestamp smoothedNow = timePredicted + duration_cast<Duration>(alpha * residual);
@@ -480,6 +520,18 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         output = now;
     }
 
+    TracyPlotConfig("rate->jitter", tracy::PlotFormatType::Number, true, true, 0);
+    TracyPlot("rate->jitter", arrival.rate ? arrival.rate->jitter.count() / 1'000'000. : 0.);
+
+    TracyPlotConfig("arrival.frameInterval", tracy::PlotFormatType::Number, true, true, 0);
+    TracyPlot("arrival.frameInterval", arrival.rate
+            ? arrival.rate->frameInterval.count() / 1'000'000.
+            : 0.);
+
+    static const char * const RATE_COMPUTED = "rate.has_value()";
+    TracyPlot(RATE_COMPUTED, (long)arrival.rate.has_value());
+    TracyPlotConfig(RATE_COMPUTED, tracy::PlotFormatType::Number, true, true, 0);
+
     const Duration elapsed = now - arrival.windowStart;
 
     // Periodically recompute stats.
@@ -488,6 +540,7 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
     }
 
     if (arrival.windowFrames > 1) {
+        brls::Logger::info("Computing stats...");
         // duration<double>() is measured in seconds: https://en.cppreference.com/cpp/chrono/duration
         const double elapsedSeconds =
             std::chrono::duration<double>(elapsed).count();
@@ -498,6 +551,8 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         if (!arrival.rate) {
             arrival.rate = RateState{};
             auto & rate = *arrival.rate;
+            TracyPlot(RATE_COMPUTED, (long)arrival.rate.has_value());
+
             double sampleFps = static_cast<double>(arrival.windowFrames - 1) / elapsedSeconds;
             sampleFps = std::clamp(sampleFps, 1.0, maximumFps);
             rate.estimatedSourceFps = sampleFps;
@@ -506,6 +561,8 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
             // (no left/both taper, but it's good enough for an initial guess.)
             rate.frameInterval = std::chrono::nanoseconds(
                 static_cast<int64_t>(1000000000.0 / rate.estimatedSourceFps));
+            brls::Logger::info("arrival.frameInterval := {}", rate.frameInterval);
+
             // rate.jitter is initialized to zero. unfortunately we can't easily extract
             // jitter from past consumed frames.
         } else {
@@ -526,6 +583,7 @@ Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
         }
     }
 
+    brls::Logger::info("Next round of stats...");
     arrival.windowStart = now;
     arrival.windowFrames = 1;
     return output;

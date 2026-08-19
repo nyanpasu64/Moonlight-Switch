@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sstream>
+#include <tracy/Tracy.hpp>
 
 #define CHANNEL_COUNT_STEREO 2
 #define CHANNEL_COUNT_51_SURROUND 6
@@ -275,7 +276,7 @@ int gs_pair(PSERVER_DATA server, char* pin) {
              "http://%s:%u/"
              "pair?uniqueid=%s&devicename=roth&updateState=1&phrase="
              "getservercert&salt=%s&clientcert=%s",
-             server->serverInfo.address, 
+             server->serverInfo.address,
              server->httpPort,
              unique_id.c_str(), salt.hex().bytes(),
              CryptoManager::cert_data().hex().bytes());
@@ -315,7 +316,7 @@ int gs_pair(PSERVER_DATA server, char* pin) {
         url, sizeof(url),
         "http://%s:%u/"
         "pair?uniqueid=%s&devicename=roth&updateState=1&clientchallenge=%s",
-        server->serverInfo.address, 
+        server->serverInfo.address,
         server->httpPort,
         unique_id.c_str(),
         encryptedChallenge.hex().bytes());
@@ -417,7 +418,7 @@ int gs_pair(PSERVER_DATA server, char* pin) {
         url, sizeof(url),
         "http://%s:%u/"
         "pair?uniqueid=%s&devicename=roth&updateState=1&clientpairingsecret=%s",
-        server->serverInfo.address, 
+        server->serverInfo.address,
         server->httpPort,
         unique_id.c_str(),
         clientPairingSecret.hex().bytes());
@@ -486,6 +487,7 @@ int gs_app_boxart(PSERVER_DATA server, int app_id, Data* out) {
 
 int gs_start_app(PSERVER_DATA server, STREAM_CONFIGURATION* config, int appId,
                  bool sops, bool localaudio, int gamepad_mask) {
+    ZoneScoped;
     int ret = GS_OK;
     std::string result;
 
@@ -583,6 +585,7 @@ exit:
 }
 
 int gs_init(PSERVER_DATA server, const std::string address) {
+    ZoneScoped;
     std::stringstream addressStream(address);
     std::string segment;
     std::vector<std::string> seglist;
@@ -597,7 +600,7 @@ int gs_init(PSERVER_DATA server, const std::string address) {
     if (seglist.size() > 1) {
         httpPort = atoi(seglist[1].c_str());
     }
-    
+
     if (!CryptoManager::load_cert_key_pair()) {
         brls::Logger::info("Client: No certs, generate new...");
 
