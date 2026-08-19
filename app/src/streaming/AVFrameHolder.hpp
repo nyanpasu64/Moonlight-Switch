@@ -6,10 +6,20 @@
 #include "Settings.hpp"
 #include <mutex>
 #include <queue>
+#include <deque>
+#include <optional>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
 }
+
+using Timestamp = std::chrono::steady_clock::time_point;
+using Duration = std::chrono::nanoseconds;
+
+struct TimedFrame {
+    Timestamp timeEstimate;
+    AVFrame* frame;
+};
 
 class AVFrameQueue {
 public:
@@ -39,6 +49,7 @@ public:
     [[nodiscard]] size_t getLocalClockPacedFrameStat() const;
     [[nodiscard]] size_t getPlayoutResyncStat() const;
     [[nodiscard]] double getEstimatedSourceFps() const;
+    [[nodiscard]] double getJitterMs() const;
 
     void cleanup();
 
@@ -46,29 +57,54 @@ private:
     friend class AVFrameHolder;
     AVFrame* acquireFrameLocked();
     bool pushTransferredLocked(AVFrame* item);
-    void recordArrivalLocked(std::chrono::steady_clock::time_point now);
+    Timestamp recordArrivalLocked(Timestamp now);
     void resetArrivalRateEstimatorLocked();
     void trimToPlayoutWindowLocked();
     size_t limit = 0;
-    std::queue<AVFrame*> queue;
+    std::deque<TimedFrame> queue;
     std::queue<AVFrame*> freeQueue;
     AVFrame* bufferFrame = nullptr;
     bool transferOwnership = false;
     size_t targetBufferedFrames = 0;
     int streamFps = 0;
-    std::chrono::nanoseconds adaptiveFrameInterval{0};
-    std::chrono::steady_clock::time_point lastDraw{};
-    std::chrono::nanoseconds averageDrawInterval{0};
-    std::chrono::steady_clock::time_point arrivalWindowStart{};
-    std::chrono::steady_clock::time_point lastArrival{};
-    size_t arrivalWindowFrames = 0;
-    size_t arrivalRateSamples = 0;
-    double estimatedSourceFps = 0.0;
-    double frameCredit = 0.0;
-    bool drawClockStarted = false;
-    bool arrivalClockStarted = false;
-    bool startupBuffering = true;
-    bool playoutResyncNeeded = true;
+
+    /// fields only calculated once we receive enough frames, split out for lifetime
+    /// documentation
+    struct RateState {
+        /// alpha-beta filter for running fps
+        Duration frameInterval{0};
+
+        double estimatedSourceFps = 0.0;
+
+        // i *really* want it to be available from start, but calculating it depends on
+        // frameInterval. alas.
+        Duration jitter{};
+    };
+
+    /// received frames
+    struct Arrival {
+        bool clockStarted = false;
+
+        Timestamp lastArrival{};
+        Timestamp windowStart{};
+        size_t windowFrames = 0;  // TODO why not count periods rather than fenceposts?
+
+        std::optional<RateState> rate;
+    } arrival;
+
+    /// sending frames to screen paints
+    struct Draw {
+        std::chrono::steady_clock::time_point lastDraw{};
+        std::chrono::nanoseconds averageInterval{0};
+
+        bool clockStarted = false;
+        bool startupBuffering = true;
+
+        // Does not trigger a push underflow (which destroys arrival::rate), but we also
+        // call resetArrivalRateEstimatorLocked(), which does.
+        bool resyncNeeded = true;
+    } draw;
+
     mutable std::mutex m_mutex;
     size_t fakeFrameUsedStat = 0;
     size_t framesDroppedStat = 0;
@@ -132,6 +168,7 @@ class AVFrameHolder : public Singleton<AVFrameHolder> {
     [[nodiscard]] size_t getFrameQueueLocalClockPacedFrameStat() const { return m_frame_queue.getLocalClockPacedFrameStat(); }
     [[nodiscard]] size_t getFrameQueuePlayoutResyncStat() const { return m_frame_queue.getPlayoutResyncStat(); }
     [[nodiscard]] double getFrameQueueEstimatedSourceFps() const { return m_frame_queue.getEstimatedSourceFps(); }
+    [[nodiscard]] double getFrameQueueJitterMs() const { return m_frame_queue.getJitterMs(); }
 
   private:
     AVFrameQueue m_frame_queue;

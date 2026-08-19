@@ -9,6 +9,8 @@
 
 #include <algorithm>
 
+using std::chrono::duration_cast;
+
 namespace {
 
 constexpr size_t kBurstHeadroomFrames = 5;
@@ -21,6 +23,13 @@ constexpr double kMaximumOccupancyCorrection = 0.08;
 void freeFrameQueue(std::queue<AVFrame*>& frames) {
     for (; !frames.empty(); frames.pop()) {
         AVFrame* frame = frames.front();
+        av_frame_free(&frame);
+    }
+}
+
+void freeTimedFrames(std::deque<TimedFrame>& frames) {
+    for (; !frames.empty(); frames.pop_front()) {
+        AVFrame* frame = frames.front().frame;
         av_frame_free(&frame);
     }
 }
@@ -69,22 +78,21 @@ bool AVFrameQueue::push(AVFrame* item) {
         return false;
     }
 
-    queue.push(queuedFrame);
-    recordArrivalLocked(std::chrono::steady_clock::now());
+    const Timestamp timeEstimate = recordArrivalLocked(std::chrono::steady_clock::now());
+    queue.push_back(TimedFrame{timeEstimate, queuedFrame});
     pushesSincePop++;
     maxPushBurstStat = std::max(maxPushBurstStat, pushesSincePop);
 
     if (queue.size() > limit) {
         const size_t keepFrames = targetBufferedFrames + 1;
         while (queue.size() > keepFrames) {
-            AVFrame* droppedFrame = queue.front();
-            queue.pop();
+            AVFrame* droppedFrame = queue.front().frame;
+            queue.pop_front();
             recycleFrame(freeQueue, droppedFrame);
             framesDroppedStat++;
             overflowDropStat++;
         }
         resetArrivalRateEstimatorLocked();
-        playoutResyncNeeded = true;
     }
 
     return true;
@@ -105,30 +113,29 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
     }
 
     const auto now = std::chrono::steady_clock::now();
-    if (!drawClockStarted) {
-        lastDraw = now;
-        drawClockStarted = true;
+    if (!draw.clockStarted) {
+        draw.lastDraw = now;
+        draw.clockStarted = true;
     } else {
         const auto drawInterval =
-            std::chrono::duration_cast<std::chrono::nanoseconds>(now - lastDraw);
-        lastDraw = now;
+            std::chrono::duration_cast<std::chrono::nanoseconds>(now - draw.lastDraw);
+        draw.lastDraw = now;
 
         // App suspension and debugger pauses must not turn into a large burst
         // of overdue video frames when drawing resumes.
         if (drawInterval <= std::chrono::nanoseconds::zero() ||
             drawInterval > std::chrono::milliseconds(250)) {
-            averageDrawInterval = std::chrono::nanoseconds::zero();
-            frameCredit = 0.0;
-            playoutResyncNeeded = true;
-        } else if (averageDrawInterval == std::chrono::nanoseconds::zero()) {
-            averageDrawInterval = drawInterval;
+            draw.averageInterval = std::chrono::nanoseconds::zero();
+            draw.resyncNeeded = true;
+        } else if (draw.averageInterval == std::chrono::nanoseconds::zero()) {
+            draw.averageInterval = drawInterval;
         } else {
-            averageDrawInterval =
-                (averageDrawInterval * 15 + drawInterval) / 16;
+            draw.averageInterval =
+                (draw.averageInterval * 15 + drawInterval) / 16;
         }
     }
 
-    if (startupBuffering && queue.size() <= targetBufferedFrames) {
+    if (draw.startupBuffering && queue.size() <= targetBufferedFrames) {
         if (bufferFrame) {
             fakeFrameUsedStat++;
             rebufferHoldStat++;
@@ -136,18 +143,17 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         return bufferFrame;
     }
 
-    if (startupBuffering) {
+    if (draw.startupBuffering) {
         // Establish a small jitter reserve once at startup. Rebuilding the
         // whole reserve after every ordinary miss batches a variable-rate
         // source into visible freeze-and-catch-up cycles.
-        startupBuffering = false;
-        frameCredit = 0.0;
-        playoutResyncNeeded = true;
+        draw.startupBuffering = false;
+        draw.resyncNeeded = true;
     }
 
     size_t dueFrames = 0;
     const bool backlogResync = limit > 0 && queue.size() >= limit;
-    if ((playoutResyncNeeded || backlogResync) && !queue.empty()) {
+    if ((draw.resyncNeeded || backlogResync) && !queue.empty()) {
         // Resume immediately after a real miss. If latency has reached the
         // hard limit, discard the stale backlog once instead of repeatedly
         // overflowing the oldest frame while playback remains frozen.
@@ -155,56 +161,84 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         if (backlogResync) {
             resetArrivalRateEstimatorLocked();
         }
-        playoutResyncNeeded = false;
-        frameCredit = 0.0;
+        draw.resyncNeeded = false;
         playoutResyncStat++;
         dueFrames = 1;
-    } else if (arrivalRateSamples == 0 ||
-               adaptiveFrameInterval <= std::chrono::nanoseconds::zero() ||
-               averageDrawInterval <= std::chrono::nanoseconds::zero()) {
+    } else if (!arrival.rate ||
+               arrival.rate->frameInterval <= std::chrono::nanoseconds::zero() ||
+               draw.averageInterval <= std::chrono::nanoseconds::zero()) {
         // During the short measurement warm-up, consume only above the jitter
         // reserve. This follows arrivals without assuming configured FPS is
         // the FPS the host is actually producing.
-        dueFrames = queue.size() > targetBufferedFrames ? 1 : 0;
-    } else if (adaptiveFrameInterval > std::chrono::nanoseconds::zero() &&
-               averageDrawInterval > std::chrono::nanoseconds::zero()) {
-        const double baseFramesPerDraw =
-            static_cast<double>(averageDrawInterval.count()) /
-            static_cast<double>(adaptiveFrameInterval.count());
-        const double desiredDepth =
-            static_cast<double>(targetBufferedFrames + 1);
-        const double depthError =
-            static_cast<double>(queue.size()) - desiredDepth;
-        const double occupancyCorrection = std::clamp(
-            depthError * kOccupancyCorrectionPerFrame,
-            -kMaximumOccupancyCorrection, kMaximumOccupancyCorrection);
-        const double framesPerDraw =
-            std::max(0.0, baseFramesPerDraw + occupancyCorrection);
 
-        if (baseFramesPerDraw >= 0.98 && baseFramesPerDraw <= 1.02 &&
-            depthError == 0.0) {
-            frameCredit = 0.0;
-            dueFrames = 1;
-        } else {
-            frameCredit += framesPerDraw;
-            const size_t wholeFrames = static_cast<size_t>(frameCredit);
-            frameCredit -= static_cast<double>(wholeFrames);
-            dueFrames = std::min(wholeFrames, limit);
+        // (nyanpasu64) I *would* consume the last frame and ignore targetBufferedFrames
+        // altogether, which reduces latency in resync following a frame drop... but if
+        // the final frame of training comes early (-> arrival.lastArrival), we could
+        // start rate-following on an empty buffer *and* predict frames should arrive
+        // before they do, triggering an immediate second resync. I have *ideas* on how
+        // to better initialize arrival.lastArrival, but none obviously good.
+        dueFrames = queue.size() > targetBufferedFrames ? 1 : 0;
+    } else if (arrival.rate->frameInterval > std::chrono::nanoseconds::zero() &&
+               draw.averageInterval > std::chrono::nanoseconds::zero()) {
+        auto & rate = *arrival.rate;
+        // input / output
+        const double baseFramesPerDraw =
+            static_cast<double>(draw.averageInterval.count()) /
+            static_cast<double>(rate.frameInterval.count());
+
+        for (; dueFrames < queue.size(); dueFrames++) {
+            const Timestamp frameTime = queue[dueFrames].timeEstimate;
+
+            // rate.jitter is a filtered envelope follower (not averager). Boost it by
+            // 1.5 and add a minimum buffer to accommodate latency spikes.
+            const Timestamp presentTime = frameTime +
+                (duration_cast<Duration>(1.5 * rate.jitter) + std::chrono::milliseconds(6));
+
+            // Always show at least 1 frame if the server isn't slow.
+            if (baseFramesPerDraw >= 0.98 && dueFrames <= 0) {
+                continue;
+            }
+
+            // We shouldn't skip frame 0 to a just-received frame 1, since the next
+            // present may not have frame 2 decoded, resulting in a duplicated frame.
+            if (presentTime > now) {
+                break;
+            }
+        }
+
+        // If we *have no frames* to present (not just choose to skip showing one)...
+        if (queue.size() == 0) {
+            // We expect a frame could arrive (1.5 * rate.jitter + 6 ms)
+            // late, and delay presenting on-time frames to the latest time we expect it to arrive.
+            //
+            // If no frames are available, wait for the next frame's expected *present
+            // time* (not arrival time) before declaring it missing.
+            const Timestamp frameTime = arrival.lastArrival + rate.frameInterval;
+            const Timestamp presentTime = frameTime +
+                (duration_cast<Duration>(1.5 * rate.jitter) + std::chrono::milliseconds(6));
+
+            // We *could* add `if (baseFramesPerDraw >= 0.98) dueframes = 1` because it
+            // would be presented if it existed... but I chose to let dropped frames
+            // slip if their present time is in the future (to avoid declaring underflow
+            // when not absolutely necessary), at the cost of slightly unintuitive
+            // behavior when staring at debug plots.
+            if (now > presentTime) {
+                // Declare a missing frame.
+                // you may be tempted to move the `if (queue.empty())` early-exit here.
+                // this is a bad idea because it bypasses `TracyPlot("pop() consumed")`.
+                dueFrames = 1;
+            }
         }
     }
 
     if (dueFrames == 0) {
         scheduledHoldStat++;
         return bufferFrame;
-    }
-
-    if (queue.empty()) {
+    } else if (queue.empty()) {
         if (bufferFrame) {
             fakeFrameUsedStat++;
             emptyQueueStat++;
         }
-        frameCredit = 0.0;
-        playoutResyncNeeded = true;
         // The measured cadence may now be too high because the host FPS fell.
         // Relearn it from fresh arrivals while occupancy pacing protects the
         // jitter reserve, rather than causing repeated underflow/resume cycles.
@@ -212,19 +246,17 @@ AVFrame* AVFrameQueue::pop(bool* consumed) {
         return bufferFrame;
     }
 
-    const size_t consumeCount = std::min(queue.size(), dueFrames);
-
     recycleFrame(freeQueue, bufferFrame);
     for (size_t i = 0; i < consumeCount; i++) {
-        AVFrame* item = queue.front();
-        queue.pop();
+        TimedFrame item = queue.front();
+        queue.pop_front();
 
         if (i + 1 < consumeCount) {
-            recycleFrame(freeQueue, item);
+            recycleFrame(freeQueue, item.frame);
             framesDroppedStat++;
             pacingSkipStat++;
         } else {
-            bufferFrame = item;
+            bufferFrame = item.frame;
         }
     }
 
@@ -252,19 +284,11 @@ void AVFrameQueue::configure(size_t queueLimit, int configuredStreamFps,
     const size_t configuredDepth = std::max<size_t>(queueLimit, 1);
     limit = capacityFor(configuredDepth);
     targetBufferedFrames =
-        configuredDepth > 1 ? std::min<size_t>(configuredDepth - 1, 2) : 0;
+        configuredDepth > 1 ? std::min<size_t>(configuredDepth - 1, 1) : 0;
     transferOwnership = transferOwnershipEnabled;
     streamFps = configuredStreamFps;
-    adaptiveFrameInterval = std::chrono::nanoseconds::zero();
-    drawClockStarted = false;
-    averageDrawInterval = std::chrono::nanoseconds::zero();
-    arrivalClockStarted = false;
-    arrivalWindowFrames = 0;
-    arrivalRateSamples = 0;
-    estimatedSourceFps = 0.0;
-    frameCredit = 0.0;
-    startupBuffering = true;
-    playoutResyncNeeded = true;
+    arrival = Arrival{};
+    draw = Draw{};
 }
 
 size_t AVFrameQueue::size() const {
@@ -334,7 +358,15 @@ size_t AVFrameQueue::getPlayoutResyncStat() const {
 
 double AVFrameQueue::getEstimatedSourceFps() const {
     std::lock_guard<std::mutex> lock(m_mutex);
-    return estimatedSourceFps;
+    if (!arrival.rate) return 0.;
+    return arrival.rate->estimatedSourceFps;
+}
+
+double AVFrameQueue::getJitterMs() const {
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (!arrival.rate) return 0.;
+    auto jitterNs = arrival.rate->jitter.count();
+    return jitterNs / 1'000'000.;
 }
 
 AVFrame* AVFrameQueue::acquireFrameLocked() {
@@ -355,95 +387,162 @@ bool AVFrameQueue::pushTransferredLocked(AVFrame* item) {
         return false;
     }
 
-    queue.push(item);
-    recordArrivalLocked(std::chrono::steady_clock::now());
+    const Timestamp timeEstimate = recordArrivalLocked(std::chrono::steady_clock::now());
+    queue.push_back(TimedFrame{timeEstimate, item});
     pushesSincePop++;
     maxPushBurstStat = std::max(maxPushBurstStat, pushesSincePop);
 
     if (queue.size() > limit) {
         const size_t keepFrames = targetBufferedFrames + 1;
         while (queue.size() > keepFrames) {
-            AVFrame* droppedFrame = queue.front();
-            queue.pop();
+            AVFrame* droppedFrame = queue.front().frame;
+            queue.pop_front();
             recycleFrame(freeQueue, droppedFrame);
             framesDroppedStat++;
             overflowDropStat++;
         }
         resetArrivalRateEstimatorLocked();
-        playoutResyncNeeded = true;
     }
 
     return true;
 }
 
-void AVFrameQueue::recordArrivalLocked(
-    std::chrono::steady_clock::time_point now) {
-    if (!arrivalClockStarted) {
-        arrivalClockStarted = true;
-        arrivalWindowStart = now;
-        lastArrival = now;
-        arrivalWindowFrames = 1;
-        return;
+// https://en.wikipedia.org/wiki/Alpha_beta_filter
+// source: eyeballing "i want the time constant around 64 frames", https://alphaarchitect.com/trend-following-filters-part-2-2/#h-alpha-beta-gamma-position-tracking-filter-frequency-response-%CE%B1-0-3289-%CE%B2-0-0654-%CE%B3-0-0065
+constexpr double ALPHA = 1. / 8.;
+// observing latency spikes quickly will pass them to the viewer *before* the buffer runs dry. it's a tradeoff.
+constexpr double FAST_ALPHA = 1. / 4.;
+// https://www.oedigital.com/news/457127-applying-real-time-magnetic-declination-in-arctic-marine-seismic-acquisition
+
+constexpr double calc_beta(double alpha) {
+    // fudge factors yay
+    return alpha * alpha / (2. - alpha) / 3.;
+}
+// if we used different betas for early and late frames, then frame time jitter would
+// selectively increase frame time estimates, which is bad.
+constexpr double BETA = calc_beta(1. / 6.);
+
+Timestamp AVFrameQueue::recordArrivalLocked(const Timestamp now) {
+    auto initArrival = [&]() {
+        arrival.windowStart = now;
+        arrival.lastArrival = now;
+        arrival.windowFrames = 1;
+        // don't reset jitter?
+        // if (auto & rate = arrival.rate) {
+        //     rate->jitter = Duration::zero();
+        // }
+        return now;
+    };
+
+    if (!arrival.clockStarted) {
+        arrival.clockStarted = true;
+        return initArrival();
     }
 
-    if (now - lastArrival > kArrivalRateResetGap) {
+    if (now - arrival.lastArrival > kArrivalRateResetGap) {
         // Do not interpret a network pause or app suspension as a permanent
         // low source rate. Start a fresh window when frames resume.
-        arrivalWindowStart = now;
-        lastArrival = now;
-        arrivalWindowFrames = 1;
-        return;
+        return initArrival();
     }
 
-    lastArrival = now;
-    arrivalWindowFrames++;
-    const auto elapsed = now - arrivalWindowStart;
+    arrival.windowFrames++;
+
+    // Estimate smoothed time for frame pacing.
+    Timestamp output;
+    if (auto & rate = arrival.rate) {
+        // https://en.wikipedia.org/wiki/Alpha_beta_filter
+        // (1)
+        const Timestamp timePredicted = arrival.lastArrival + rate->frameInterval;
+        // (3)
+        const Duration residual = now - timePredicted;
+        // (4) tell the truth if frame late, smooth over if frame early
+        const double alpha = (residual > Duration()) ? FAST_ALPHA : ALPHA;
+        const Timestamp smoothedNow = timePredicted + duration_cast<Duration>(alpha * residual);
+        // (5)
+        rate->frameInterval += duration_cast<Duration>(BETA * residual);
+
+        // The next iteration's step (1) takes *filter output*, not unfiltered now!
+        arrival.lastArrival = smoothedNow;
+        output = smoothedNow;
+
+        // Update jitter based on actual residual, not arrival.lastArrival (smoothed).
+        // Lower jitter gradually, but raise it to match spikes (interpolated to prevent sudden frame drops).
+        // If our frames are late, the next frame will probably be late and raise jitter too.
+        if (residual > rate->jitter) {
+            rate->jitter += (residual - rate->jitter) / 6;
+        } else {
+            rate->jitter -= rate->jitter / 100;
+        }
+
+    } else {
+        // arrival.frameInterval is uninitialized while !arrival.rate.
+        arrival.lastArrival = now;
+        output = now;
+    }
+
+    const Duration elapsed = now - arrival.windowStart;
+
+    // Periodically recompute stats.
     if (elapsed < kArrivalRateWindow) {
-        return;
+        return output;
     }
 
-    if (arrivalWindowFrames > 1) {
+    if (arrival.windowFrames > 1) {
+        // duration<double>() is measured in seconds: https://en.cppreference.com/cpp/chrono/duration
         const double elapsedSeconds =
             std::chrono::duration<double>(elapsed).count();
-        double sampleFps =
-            static_cast<double>(arrivalWindowFrames - 1) / elapsedSeconds;
+
         const double maximumFps =
             streamFps > 0 ? static_cast<double>(streamFps) : 240.0;
-        sampleFps = std::clamp(sampleFps, 1.0, maximumFps);
 
-        if (arrivalRateSamples == 0) {
-            estimatedSourceFps = sampleFps;
+        if (!arrival.rate) {
+            arrival.rate = RateState{};
+            auto & rate = *arrival.rate;
+            double sampleFps = static_cast<double>(arrival.windowFrames - 1) / elapsedSeconds;
+            sampleFps = std::clamp(sampleFps, 1.0, maximumFps);
+            rate.estimatedSourceFps = sampleFps;
+
+            // Initialize arrival.frameInterval with estimated interval.
+            // (no left/both taper, but it's good enough for an initial guess.)
+            rate.frameInterval = std::chrono::nanoseconds(
+                static_cast<int64_t>(1000000000.0 / rate.estimatedSourceFps));
+            // rate.jitter is initialized to zero. unfortunately we can't easily extract
+            // jitter from past consumed frames.
         } else {
+            auto & rate = *arrival.rate;
+            const double dSecPerFrame = rate.frameInterval.count() / 1'000'000'000.;
+
+            // Used to be `static_cast<double>(arrival.windowFrames - 1) / elapsedSeconds`
+            // but I feel like using the filtered frameInterval today.
+            double sampleFps = 1. / dSecPerFrame;
+            sampleFps = std::clamp(sampleFps, 1.0, maximumFps);
+
             // The quarter-second sample ignores short decoder bursts. The EMA
             // follows sustained FPS changes without making network jitter a
             // new presentation cadence every window.
-            estimatedSourceFps =
-                estimatedSourceFps * (1.0 - kArrivalRateSmoothing) +
+            rate.estimatedSourceFps =
+                rate.estimatedSourceFps * (1.0 - kArrivalRateSmoothing) +
                 sampleFps * kArrivalRateSmoothing;
         }
-        arrivalRateSamples++;
-        adaptiveFrameInterval = std::chrono::nanoseconds(
-            static_cast<int64_t>(1000000000.0 / estimatedSourceFps));
     }
 
-    arrivalWindowStart = now;
-    arrivalWindowFrames = 1;
+    arrival.windowStart = now;
+    arrival.windowFrames = 1;
+    return output;
 }
 
 void AVFrameQueue::resetArrivalRateEstimatorLocked() {
-    arrivalClockStarted = false;
-    arrivalWindowFrames = 0;
-    arrivalRateSamples = 0;
-    estimatedSourceFps = 0.0;
-    adaptiveFrameInterval = std::chrono::nanoseconds::zero();
+    ZoneScoped;
+    arrival = Arrival{};
+    draw.resyncNeeded = true;
 }
 
 void AVFrameQueue::trimToPlayoutWindowLocked() {
     const size_t keepFrames = targetBufferedFrames + 1;
     while (queue.size() > keepFrames) {
-        AVFrame* droppedFrame = queue.front();
-        queue.pop();
-        recycleFrame(freeQueue, droppedFrame);
+        TimedFrame droppedFrame = queue.front();
+        queue.pop_front();
+        recycleFrame(freeQueue, droppedFrame.frame);
         framesDroppedStat++;
         pacingSkipStat++;
     }
@@ -462,22 +561,14 @@ void AVFrameQueue::cleanup() {
     maxPushBurstStat = 0;
     localClockPacedFrameStat = 0;
     playoutResyncStat = 0;
-    drawClockStarted = false;
-    averageDrawInterval = std::chrono::nanoseconds::zero();
-    arrivalClockStarted = false;
-    arrivalWindowFrames = 0;
-    arrivalRateSamples = 0;
-    estimatedSourceFps = 0.0;
-    adaptiveFrameInterval = std::chrono::nanoseconds::zero();
-    frameCredit = 0.0;
-    startupBuffering = true;
-    playoutResyncNeeded = true;
+    arrival = Arrival{};
+    draw = Draw{};
 
     if (bufferFrame) {
         av_frame_free(&bufferFrame);
     }
 
-    freeFrameQueue(queue);
+    freeTimedFrames(queue);
     freeFrameQueue(freeQueue);
     queue = {};
     freeQueue = {};
